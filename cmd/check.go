@@ -6,6 +6,8 @@ import (
 
 	"github.com/opencode/sbx-policy/internal/config"
 	"github.com/opencode/sbx-policy/internal/policy"
+	"github.com/opencode/sbx-policy/internal/project"
+	"github.com/opencode/sbx-policy/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +37,26 @@ var checkCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Println("✓ .sbx/policy.yaml is valid")
+		identity, err := project.Identify(root)
+		if err != nil {
+			return fmt.Errorf("identify project: %w", err)
+		}
+
+		mgr := state.NewManager()
+		stored, found, _ := mgr.Load(identity.StateKey())
+
+		sandbox := p.Sandbox
+		if sandbox == "" && found {
+			sandbox = stored.Sandbox
+		}
+
+		if sandbox != "" {
+			fmt.Printf("✓ .sbx/policy.yaml is valid (sandbox: %s)\n", sandbox)
+		} else {
+			fmt.Println("✓ .sbx/policy.yaml is valid")
+			fmt.Fprintln(os.Stderr, "⚠ Warning: no sandbox configured. 'sbx-policy sync' will fail until you set one.")
+			fmt.Fprintln(os.Stderr, "   Add 'sandbox: <name>' to .sbx/policy.yaml or pass --sandbox to sync.")
+		}
 		return nil
 	},
 }

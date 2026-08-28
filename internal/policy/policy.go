@@ -18,6 +18,10 @@ func Validate(p config.Policy) error {
 		return fmt.Errorf("network_allowlist must be a list")
 	}
 
+	if strings.ContainsAny(p.Sandbox, " \t\n\r") {
+		return fmt.Errorf("sandbox name %q contains whitespace", p.Sandbox)
+	}
+
 	for i, entry := range p.NetworkAllowlist {
 		if strings.TrimSpace(entry) == "" {
 			return fmt.Errorf("network_allowlist entry %d is empty", i)

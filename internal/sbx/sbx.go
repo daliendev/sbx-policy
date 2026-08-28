@@ -42,13 +42,18 @@ func NewClient() *Client {
 }
 
 // ListNetworkRules returns the current network allowlist entries managed by sbx.
+// If sandbox is non-empty, rules are scoped to that sandbox.
 //
 // LIMITATION: sbx does not currently expose a structured way to list only network
 // policy rules with their provenance. We attempt to parse the output of
 // "sbx policy ls" and filter for lines that look like network allowances.
 // If the CLI output format changes, this may break.
-func (c *Client) ListNetworkRules() ([]string, error) {
-	out, err := c.Runner.Run("sbx", "policy", "ls")
+func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
+	args := []string{"policy", "ls"}
+	if sandbox != "" {
+		args = append(args, "--sandbox", sandbox)
+	}
+	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
 		// If sbx doesn't support "policy ls", we can't determine current state.
 		return nil, fmt.Errorf("sbx policy ls failed: %w", err)
@@ -73,8 +78,14 @@ func (c *Client) ListNetworkRules() ([]string, error) {
 }
 
 // AddNetworkRule adds a single network allowlist entry via sbx.
-func (c *Client) AddNetworkRule(host string) error {
-	out, err := c.Runner.Run("sbx", "policy", "allow", "network", host)
+// If sandbox is non-empty, the rule is scoped to that sandbox only.
+func (c *Client) AddNetworkRule(host string, sandbox string) error {
+	args := []string{"policy", "allow", "network"}
+	if sandbox != "" {
+		args = append(args, "--sandbox", sandbox)
+	}
+	args = append(args, host)
+	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
 		return fmt.Errorf("sbx policy allow network %s: %w\noutput: %s", host, err, string(out))
 	}
@@ -84,21 +95,22 @@ func (c *Client) AddNetworkRule(host string) error {
 // RemoveNetworkRule removes a single network allowlist entry via sbx.
 // NOTE: sbx may not support removing individual rules. This is a placeholder
 // for future CLI support.
-func (c *Client) RemoveNetworkRule(host string) error {
+func (c *Client) RemoveNetworkRule(host string, sandbox string) error {
 	// As of the current sbx CLI, there is no known "remove" subcommand.
 	// We silently skip removal to avoid destroying global rules.
 	return nil
 }
 
 // SyncNetworkPolicy ensures the given allowlist is present in sbx.
+// If sandbox is non-empty, the policy is scoped to that sandbox only.
 // It is idempotent: repeated calls with the same list do not keep adding rules.
-func (c *Client) SyncNetworkPolicy(desired []string) error {
-	current, err := c.ListNetworkRules()
+func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
+	current, err := c.ListNetworkRules(sandbox)
 	if err != nil {
 		// LIMITATION: If we can't read current state, we add rules defensively.
 		// We skip removal because we can't verify ownership.
 		for _, h := range desired {
-			_ = c.AddNetworkRule(h)
+			_ = c.AddNetworkRule(h, sandbox)
 		}
 		return fmt.Errorf("unable to read current sbx state; added desired rules defensively: %w", err)
 	}
@@ -110,7 +122,7 @@ func (c *Client) SyncNetworkPolicy(desired []string) error {
 
 	for _, h := range desired {
 		if _, ok := currentSet[h]; !ok {
-			if err := c.AddNetworkRule(h); err != nil {
+			if err := c.AddNetworkRule(h, sandbox); err != nil {
 				return err
 			}
 		}

@@ -24,14 +24,14 @@ func TestSyncNetworkPolicyIdempotent(t *testing.T) {
 	client := &Client{Runner: mock}
 
 	// First sync
-	err := client.SyncNetworkPolicy([]string{"github.com", "example.com"})
+	err := client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Second sync with same list should not add again (because mock reports them present)
 	mock.calls = nil
-	err = client.SyncNetworkPolicy([]string{"github.com", "example.com"})
+	err = client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestSyncNetworkPolicyAddsMissing(t *testing.T) {
 	mock := &mockRunner{}
 	client := &Client{Runner: mock}
 
-	err := client.SyncNetworkPolicy([]string{"new.com"})
+	err := client.SyncNetworkPolicy([]string{"new.com"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
 	failRunner := &failListRunner{}
 	client := &Client{Runner: failRunner}
 
-	err := client.SyncNetworkPolicy([]string{"fallback.com"})
+	err := client.SyncNetworkPolicy([]string{"fallback.com"}, "")
 	if err == nil {
 		t.Fatal("expected error when list fails")
 	}
@@ -81,6 +81,26 @@ func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected defensive add for fallback.com, got calls: %v", failRunner.calls)
+	}
+}
+
+func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
+	mock := &mockRunner{}
+	client := &Client{Runner: mock}
+
+	err := client.SyncNetworkPolicy([]string{"scoped.com"}, "my-sandbox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, call := range mock.calls {
+		if len(call) >= 6 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected scoped add call for scoped.com, got calls: %v", mock.calls)
 	}
 }
 

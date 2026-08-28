@@ -13,6 +13,7 @@ const PolicyFileName = ".sbx/policy.yaml"
 // Policy represents the project policy file schema.
 type Policy struct {
 	Version          int      `yaml:"version"`
+	Sandbox          string   `yaml:"sandbox,omitempty"`
 	NetworkAllowlist []string `yaml:"network_allowlist"`
 }
 

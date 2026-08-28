@@ -90,8 +90,8 @@ type failListRunner struct {
 
 func (f *failListRunner) Run(name string, arg ...string) ([]byte, error) {
 	f.calls = append(f.calls, append([]string{name}, arg...))
-	if len(arg) >= 2 && arg[0] == "policy" && arg[1] == "list" {
-		return nil, fmt.Errorf("sbx policy list not supported")
+	if len(arg) >= 2 && arg[0] == "policy" && arg[1] == "ls" {
+		return nil, fmt.Errorf("sbx policy ls not supported")
 	}
 	return nil, nil
 }

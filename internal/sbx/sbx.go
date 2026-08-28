@@ -45,13 +45,13 @@ func NewClient() *Client {
 //
 // LIMITATION: sbx does not currently expose a structured way to list only network
 // policy rules with their provenance. We attempt to parse the output of
-// "sbx policy list" and filter for lines that look like network allowances.
+// "sbx policy ls" and filter for lines that look like network allowances.
 // If the CLI output format changes, this may break.
 func (c *Client) ListNetworkRules() ([]string, error) {
-	out, err := c.Runner.Run("sbx", "policy", "list")
+	out, err := c.Runner.Run("sbx", "policy", "ls")
 	if err != nil {
-		// If sbx doesn't support "policy list", we can't determine current state.
-		return nil, fmt.Errorf("sbx policy list failed: %w", err)
+		// If sbx doesn't support "policy ls", we can't determine current state.
+		return nil, fmt.Errorf("sbx policy ls failed: %w", err)
 	}
 
 	var rules []string

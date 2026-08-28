@@ -26,6 +26,21 @@ cd sbx-policy
 go build -o sbx-policy .
 ```
 
+### Add to your PATH
+
+If you are running from the cloned repository, add it to your `PATH` so you can invoke `sbx-policy` from any project:
+
+```bash
+# In ~/.bashrc, ~/.zshrc, or ~/.bash_profile
+export PATH="/path/to/sbx-policy:$PATH"
+```
+
+Then reload your shell:
+
+```bash
+source ~/.bashrc  # or ~/.zshrc
+```
+
 ## Quick start
 
 ```bash

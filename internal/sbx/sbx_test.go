@@ -44,19 +44,20 @@ func TestSyncNetworkPolicyAddsMissing(t *testing.T) {
 	mock := &mockRunner{}
 	client := &Client{Runner: mock}
 
-	err := client.SyncNetworkPolicy([]string{"new.com"}, "")
+	err := client.SyncNetworkPolicy([]string{"new.com", "other.com"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 5 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "new.com" {
+		if len(call) >= 5 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" &&
+			call[4] == "new.com,other.com" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected add call for new.com, got calls: %v", mock.calls)
+		t.Fatalf("expected batch add call for missing hosts, got calls: %v", mock.calls)
 	}
 }
 
@@ -85,22 +86,23 @@ func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
 	failRunner := &failListRunner{}
 	client := &Client{Runner: failRunner}
 
-	err := client.SyncNetworkPolicy([]string{"fallback.com"}, "")
+	desired := []string{"fallback.com", "second.example"}
+	err := client.SyncNetworkPolicy(desired, "")
 	if err == nil {
 		t.Fatal("expected error when list fails")
 	}
 
 	found := false
 	for _, call := range failRunner.calls {
-		if len(call) >= 5 && call[4] == "fallback.com" {
+		if len(call) >= 5 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" &&
+			call[4] == "fallback.com,second.example" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected defensive add for fallback.com, got calls: %v", failRunner.calls)
+		t.Fatalf("expected defensive batch add for desired hosts, got calls: %v", failRunner.calls)
 	}
 }
-
 func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
 	mock := &mockRunner{}
 	client := &Client{Runner: mock}
@@ -112,12 +114,34 @@ func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
+		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" &&
+			call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("expected scoped add call for scoped.com, got calls: %v", mock.calls)
+	}
+}
+
+// TestListNetworkRulesNeverUsesSandboxFlag ensures the workaround remains:
+// sbx CLI rejects --sandbox on "policy ls".
+func TestListNetworkRulesNeverUsesSandboxFlag(t *testing.T) {
+	mock := &mockRunner{}
+	client := &Client{Runner: mock}
+
+	_, err := client.ListNetworkRules("my-sandbox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, call := range mock.calls {
+		if len(call) >= 3 && call[1] == "policy" && call[2] == "ls" {
+			for _, token := range call[3:] {
+				if token == "--sandbox" {
+					t.Fatalf("sbx policy ls must not include --sandbox, got call: %v", call)
+				}
+			}
+		}
 	}
 }
 

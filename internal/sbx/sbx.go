@@ -32,17 +32,18 @@ func NewClient() *Client {
 }
 
 // ListNetworkRules returns the current network allowlist entries managed by sbx.
-// If sandbox is non-empty, rules are scoped to that sandbox.
+// The sandbox parameter is ignored for listing because the sbx CLI does not
+// support a --sandbox flag for "sbx policy ls". All policy lines are fetched and
+// filtered client-side; entries that belong to other sandboxes may therefore
+// appear in the returned list. This is a safe fallback when ls is unsupported.
 //
 // LIMITATION: sbx does not currently expose a structured way to list only network
 // policy rules with their provenance. We attempt to parse the output of
 // "sbx policy ls" and filter for lines that look like network allowances.
 // If the CLI output format changes, this may break.
 func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
+	_ = sandbox // sandbox is accepted for API compatibility but not usable with sbx policy ls
 	args := []string{"policy", "ls"}
-	if sandbox != "" {
-		args = append(args, "--sandbox", sandbox)
-	}
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
 		return nil, fmt.Errorf("sbx policy ls failed: %w\noutput: %s", err, string(out))
@@ -68,14 +69,25 @@ func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
 // AddNetworkRule adds a single network allowlist entry via sbx.
 // If sandbox is non-empty, the rule is scoped to that sandbox only.
 func (c *Client) AddNetworkRule(host string, sandbox string) error {
+	return c.AddNetworkRules([]string{host}, sandbox)
+}
+
+// AddNetworkRules adds one or more network allowlist entries via sbx in a
+// single CLI invocation. If sandbox is non-empty, the rule is scoped to that
+// sandbox only.
+func (c *Client) AddNetworkRules(hosts []string, sandbox string) error {
+	if len(hosts) == 0 {
+		return nil
+	}
 	args := []string{"policy", "allow", "network"}
 	if sandbox != "" {
 		args = append(args, "--sandbox", sandbox)
 	}
-	args = append(args, host)
+	joined := strings.Join(hosts, ",")
+	args = append(args, joined)
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
-		return fmt.Errorf("sbx policy allow network %s: %w\noutput: %s", host, err, string(out))
+		return fmt.Errorf("sbx policy allow network %s: %w\noutput: %s", joined, err, string(out))
 	}
 	return nil
 }
@@ -102,10 +114,8 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 	current, err := c.ListNetworkRules(sandbox)
 	if err != nil {
 		allErrs := []error{err}
-		for _, h := range desired {
-			if addErr := c.AddNetworkRule(h, sandbox); addErr != nil {
-				allErrs = append(allErrs, addErr)
-			}
+		if addErr := c.AddNetworkRules(desired, sandbox); addErr != nil {
+			allErrs = append(allErrs, addErr)
 		}
 		return fmt.Errorf("unable to read current sbx state; attempted to add desired rules defensively: %w", errors.Join(allErrs...))
 	}
@@ -120,11 +130,15 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 		desiredSet[h] = struct{}{}
 	}
 
+	var toAdd []string
 	for _, h := range desired {
 		if _, ok := currentSet[h]; !ok {
-			if err := c.AddNetworkRule(h, sandbox); err != nil {
-				return err
-			}
+			toAdd = append(toAdd, h)
+		}
+	}
+	if len(toAdd) > 0 {
+		if err := c.AddNetworkRules(toAdd, sandbox); err != nil {
+			return err
 		}
 	}
 

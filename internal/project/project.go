@@ -2,6 +2,7 @@ package project
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,20 +17,18 @@ type Identity struct {
 // Identify attempts to determine a stable project identity.
 // It prefers the Git repository root and remote origin URL.
 func Identify(startDir string) (Identity, error) {
-	root, err := findGitRoot(startDir)
-	if err != nil {
-		// Fall back to the directory containing .sbx/policy.yaml
-		root = startDir
-	}
+	root := startDir
 
-	name, err := gitRemoteOrigin(root)
-	if err != nil {
+	name := ""
+	if gitRoot, err := findGitRoot(startDir); err == nil {
+		name, _ = gitRemoteOrigin(gitRoot)
+	}
+	if name == "" {
 		name = filepath.Base(root)
 	} else {
 		name = normalizeGitURL(name)
 	}
 
-	// Normalize name for safe filesystem usage
 	name = strings.TrimSuffix(name, ".git")
 	name = strings.ReplaceAll(name, "/", "-")
 	name = strings.ReplaceAll(name, ":", "-")
@@ -44,15 +43,15 @@ func Identify(startDir string) (Identity, error) {
 func (id Identity) StateKey() string {
 	// Use both the sanitized name and a hash of the absolute path
 	// to avoid collisions when two projects share the same name.
-	return fmt.Sprintf("%s-%x", id.Name, hashString(id.Root))
+	return fmt.Sprintf("%s-%s", id.Name, hashString(id.Root))
 }
 
 // normalizeGitURL extracts a "host/path" identifier from common git remote URLs.
 // Examples:
 //
-//	https://github.com/opencode/sbx-policy.git   -> github.com/opencode/sbx-policy
-//	git@github.com:opencode/sbx-policy.git       -> github.com/opencode/sbx-policy
-//	ssh://git@github.com/opencode/sbx-policy.git -> github.com/opencode/sbx-policy
+//	https://github.com/daliendev/sbx-policy.git   -> github.com/daliendev/sbx-policy
+//	git@github.com:daliendev/sbx-policy.git       -> github.com/daliendev/sbx-policy
+//	ssh://git@github.com/daliendev/sbx-policy.git -> github.com/daliendev/sbx-policy
 func normalizeGitURL(raw string) string {
 	// SSH style: git@github.com:org/repo.git
 	if strings.HasPrefix(raw, "git@") {
@@ -65,7 +64,6 @@ func normalizeGitURL(raw string) string {
 
 	// URL style: https://github.com/org/repo.git or ssh://git@host/path
 	if strings.Contains(raw, "://") {
-		// Strip scheme
 		parts := strings.SplitN(raw, "://", 2)
 		if len(parts) == 2 {
 			return strings.TrimPrefix(parts[1], "git@")
@@ -93,12 +91,8 @@ func gitRemoteOrigin(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Simple string hash for disambiguation.
 func hashString(s string) string {
-	var h uint64 = 14695981039346656037
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= 1099511628211
-	}
-	return fmt.Sprintf("%016x", h)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return fmt.Sprintf("%016x", h.Sum64())
 }

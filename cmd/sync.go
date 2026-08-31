@@ -2,19 +2,21 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/opencode/sbx-policy/internal/config"
-	"github.com/opencode/sbx-policy/internal/policy"
-	"github.com/opencode/sbx-policy/internal/project"
-	"github.com/opencode/sbx-policy/internal/sbx"
-	"github.com/opencode/sbx-policy/internal/state"
+	"github.com/daliendev/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/policy"
+	"github.com/daliendev/sbx-policy/internal/sbx"
+	"github.com/daliendev/sbx-policy/internal/state"
+	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var sandboxFlag string
+var yesFlag bool
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
@@ -23,115 +25,145 @@ var syncCmd = &cobra.Command{
 }
 
 func doSync(cmd *cobra.Command, args []string) error {
-	wd, err := os.Getwd()
+	ctx, err := resolveProject()
 	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
-	}
-
-	root, err := config.FindProjectRoot(wd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n\nRun 'sbx-policy init' to create one.\n", err)
-		os.Exit(1)
-	}
-
-	p, err := config.Load(root)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := policy.Validate(p); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	identity, err := project.Identify(root)
-	if err != nil {
-		return fmt.Errorf("identify project: %w", err)
+		if errors.Is(err, config.ErrPolicyNotFound) {
+			return exitf("Error: %v\n\nRun 'sbx-policy init' to create one.\n", err)
+		}
+		return exitf("Error: %v\n", err)
 	}
 
 	mgr := state.NewManager()
-	key := identity.StateKey()
+	key := ctx.identity.StateKey()
 	stored, found, err := mgr.Load(key)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not load remembered state: %v\n", err)
+		ui.Warning("Could not load remembered state: %v", err)
 	}
 
-	desired := policy.Normalize(p.NetworkAllowlist)
-
-	// Resolve sandbox: CLI flag > policy file > remembered state
-	sandbox := sandboxFlag
-	if sandbox == "" {
-		sandbox = p.Sandbox
-	}
-	if sandbox == "" && found {
-		sandbox = stored.Sandbox
-	}
+	desiredAllowlist := policy.Normalize(ctx.policy.NetworkAllowlist)
+	desiredPorts := policy.Normalize(ctx.policy.Ports)
+	sandbox := resolveSandbox(sandboxFlag, ctx.policy.Sandbox, stored.Sandbox, found)
 
 	if sandbox == "" {
-		fmt.Fprintln(os.Stderr, "Error: No sandbox specified for this project.")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "sbx-policy sync scopes network rules to individual sandboxes")
-		fmt.Fprintln(os.Stderr, "instead of applying them globally.")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "To specify a sandbox, use one of:")
-		fmt.Fprintln(os.Stderr, "  1. Pass --sandbox <name> to sbx-policy sync")
-		fmt.Fprintln(os.Stderr, "  2. Add 'sandbox: <name>' to .sbx/policy.yaml")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "To create a sandbox first, run your tool normally:")
-		fmt.Fprintln(os.Stderr, "  sbx run <tool> .")
-		os.Exit(1)
+		ui.Error("No sandbox specified for this project.")
+		ui.Separator()
+		ui.Info("sbx-policy sync scopes network rules to individual sandboxes")
+		ui.Info("instead of applying them globally.")
+		ui.Separator()
+		ui.Info("To specify a sandbox, use one of:")
+		ui.Info("  1. Pass --sandbox <name> to sbx-policy sync")
+		ui.Info("  2. Add 'sandbox: <name>' to .sbx/policy.yaml")
+		ui.Separator()
+		ui.Info("To create a sandbox first, run your tool normally:")
+		ui.Info("  sbx run <tool> .")
+		return fmt.Errorf("no sandbox specified")
 	}
 
-	confirmed := false
-
-	if !found {
-		fmt.Printf("No previous network policy found for this project.\n\n")
-		fmt.Printf("Sandbox: %s\n", sandbox)
-		fmt.Println("Network allowlist:")
-		for _, e := range desired {
-			fmt.Printf("  • %s\n", e)
-		}
-		fmt.Println()
-		if ask("Initialize and continue? [Y/n] ", true) {
-			confirmed = true
-		}
-	} else {
-		storedNorm := policy.Normalize(stored.Allowlist)
-		diff := policy.Compare(storedNorm, desired)
-		if diff.HasChanges() {
-			fmt.Println("⚠ Network allowlist changed since last approval")
-			fmt.Println()
-			fmt.Printf("Sandbox: %s\n", sandbox)
-			fmt.Println()
-			fmt.Print(diff.Format())
-			fmt.Println()
-			if ask("Continue with the updated policy? [y/N] ", false) {
-				confirmed = true
-			}
-		} else {
-			fmt.Printf("✓ Network allowlist unchanged for sandbox %s\n", sandbox)
-			confirmed = true
-		}
+	ok, err := confirmSync(desiredAllowlist, desiredPorts, sandbox, stored.Allowlist, stored.Ports, found)
+	if err != nil {
+		return err
 	}
-
-	if !confirmed {
-		fmt.Println("Aborted.")
-		os.Exit(1)
-	}
-
-	if err := mgr.Save(key, state.ProjectState{Allowlist: desired, Sandbox: sandbox}); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not save remembered state: %v\n", err)
+	if !ok {
+		ui.Info("Aborted.")
+		return fmt.Errorf("aborted")
 	}
 
 	client := sbx.NewClient()
-	if err := client.SyncNetworkPolicy(desired, sandbox); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	if err := client.SyncNetworkPolicy(desiredAllowlist, sandbox); err != nil {
+		return exitf("Error: %v\n", err)
+	}
+	if err := client.SyncPorts(desiredPorts, sandbox); err != nil {
+		return exitf("Error: %v\n", err)
 	}
 
-	fmt.Printf("✓ Network allowlist synchronized to sandbox %s\n", sandbox)
+	if err := mgr.Save(key, state.ProjectState{Allowlist: desiredAllowlist, Sandbox: sandbox, Ports: desiredPorts}); err != nil {
+		ui.Warning("Could not save remembered state: %v", err)
+	}
+
+	ui.Success("Network allowlist and ports synchronized to sandbox %s", sandbox)
 	return nil
+}
+
+// isStdinCharDevice returns true when os.Stdin is a character device, as
+// opposed to a pipe or file redirect. Note: this does not guarantee an
+// interactive terminal (e.g. /dev/null is a character device).
+func isStdinCharDevice() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+// resolveSandbox returns the effective sandbox name using the priority:
+// CLI flag > policy file > remembered state.
+func resolveSandbox(flag, policySandbox, storedSandbox string, found bool) string {
+	if flag != "" {
+		return flag
+	}
+	if policySandbox != "" {
+		return policySandbox
+	}
+	if found {
+		return storedSandbox
+	}
+	return ""
+}
+
+// confirmSync prompts the user when the allowlist or ports changed, or when
+// there is no previous state. It returns true if the sync should proceed.
+func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
+	if yesFlag {
+		return true, nil
+	}
+
+	allowlistDiff := policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist)
+	portsDiff := policy.Compare(policy.Normalize(storedPorts), desiredPorts)
+	noChanges := !allowlistDiff.HasChanges() && !portsDiff.HasChanges()
+
+	if !found {
+		if !isStdinCharDevice() {
+			ui.Error("This appears to be a non-interactive environment.")
+			ui.Info("Use --yes to approve the sync without prompting.")
+			return false, fmt.Errorf("non-interactive environment")
+		}
+		ui.Info("No previous network policy found for this project.")
+		ui.Separator()
+		ui.Info("Sandbox: %s", sandbox)
+		ui.Info("Network allowlist:")
+		ui.PrintList(desiredAllowlist, "•")
+		if len(desiredPorts) > 0 {
+			ui.Info("Ports:")
+			ui.PrintList(desiredPorts, "•")
+		}
+		ui.Separator()
+		return ask("Initialize and continue? [Y/n] ", true), nil
+	}
+
+	if noChanges {
+		ui.Success("Network allowlist and ports unchanged for sandbox %s", sandbox)
+		return true, nil
+	}
+
+	if !isStdinCharDevice() {
+		ui.Error("This appears to be a non-interactive environment.")
+		ui.Info("Use --yes to approve the sync without prompting.")
+		return false, fmt.Errorf("non-interactive environment")
+	}
+
+	ui.Warning("Policy changed since last approval")
+	ui.Separator()
+	ui.Info("Sandbox: %s", sandbox)
+	ui.Separator()
+	if allowlistDiff.HasChanges() {
+		ui.Info("Network allowlist:")
+		ui.PrintDiff(allowlistDiff.Added, allowlistDiff.Removed)
+	}
+	if portsDiff.HasChanges() {
+		ui.Info("Ports:")
+		ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
+	}
+	return ask("Continue with the updated policy? [y/N] ", false), nil
 }
 
 func ask(prompt string, defaultYes bool) bool {
@@ -151,4 +183,5 @@ func ask(prompt string, defaultYes bool) bool {
 func init() {
 	rootCmd.AddCommand(syncCmd)
 	syncCmd.Flags().StringVar(&sandboxFlag, "sandbox", "", "Target sandbox name (default: read from policy file or remembered state)")
+	syncCmd.Flags().BoolVar(&yesFlag, "yes", false, "Approve the sync without prompting (useful in CI)")
 }

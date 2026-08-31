@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/opencode/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/config"
 )
 
 func TestValidateVersion(t *testing.T) {
@@ -103,5 +103,40 @@ func TestDiffFormat(t *testing.T) {
 	}
 	if !strings.Contains(f, "- y") {
 		t.Fatalf("expected - y in diff, got:\n%s", f)
+	}
+}
+
+func TestValidatePortMappingOK(t *testing.T) {
+	p := config.Policy{Version: 1, NetworkAllowlist: []string{}, Ports: []string{"8080:3000", "3000"}}
+	if err := Validate(p); err != nil {
+		t.Fatalf("unexpected error for valid ports: %v", err)
+	}
+}
+
+func TestValidatePortMappingWhitespace(t *testing.T) {
+	p := config.Policy{Version: 1, NetworkAllowlist: []string{}, Ports: []string{"8080 :3000"}}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("expected whitespace error for ports, got: %v", err)
+	}
+}
+
+func TestValidatePortMappingTooManyColons(t *testing.T) {
+	p := config.Policy{Version: 1, NetworkAllowlist: []string{}, Ports: []string{"8080:3000:4000"}}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "more than one colon") {
+		t.Fatalf("expected colon error for ports, got: %v", err)
+	}
+}
+
+func TestValidatePortMappingNonNumeric(t *testing.T) {
+	p := config.Policy{Version: 1, NetworkAllowlist: []string{}, Ports: []string{"abc:3000"}}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "non-numeric") {
+		t.Fatalf("expected non-numeric error for ports, got: %v", err)
+	}
+}
+
+func TestValidatePortMappingOutOfRange(t *testing.T) {
+	p := config.Policy{Version: 1, NetworkAllowlist: []string{}, Ports: []string{"99999:3000"}}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("expected out of range error for ports, got: %v", err)
 	}
 }

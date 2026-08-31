@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,13 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrPolicyNotFound is returned when FindProjectRoot cannot locate a policy file.
+var ErrPolicyNotFound = errors.New("policy file not found")
+
 const PolicyFileName = ".sbx/policy.yaml"
 
-// Policy represents the project policy file schema.
 type Policy struct {
 	Version          int      `yaml:"version"`
 	Sandbox          string   `yaml:"sandbox,omitempty"`
 	NetworkAllowlist []string `yaml:"network_allowlist"`
+	Ports            []string `yaml:"ports,omitempty"`
 }
 
 // DefaultPolicy returns the initial policy content.
@@ -22,6 +26,7 @@ func DefaultPolicy() Policy {
 	return Policy{
 		Version:          1,
 		NetworkAllowlist: []string{},
+		Ports:            []string{},
 	}
 }
 
@@ -47,10 +52,9 @@ func FindProjectRoot(startDir string) (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("no %s found", PolicyFileName)
+	return "", fmt.Errorf("%w: no %s found", ErrPolicyNotFound, PolicyFileName)
 }
 
-// Load reads and parses the policy file from the given project root.
 func Load(projectRoot string) (Policy, error) {
 	path := filepath.Join(projectRoot, PolicyFileName)
 	data, err := os.ReadFile(path)
@@ -66,7 +70,6 @@ func Load(projectRoot string) (Policy, error) {
 	return p, nil
 }
 
-// Write writes the policy file to the given project root.
 func Write(projectRoot string, p Policy) error {
 	path := filepath.Join(projectRoot, PolicyFileName)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

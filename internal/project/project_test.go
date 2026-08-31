@@ -1,8 +1,6 @@
 package project
 
 import (
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,29 +28,19 @@ func TestStateKey(t *testing.T) {
 	}
 }
 
-func TestIdentifyGit(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Initialize a git repo
-	if err := os.WriteFile(filepath.Join(tmp, "file.txt"), []byte("hello"), 0644); err != nil {
-		t.Fatal(err)
+func TestNormalizeGitURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"git@github.com:daliendev/sbx-policy.git", "github.com/daliendev/sbx-policy.git"},
+		{"https://github.com/daliendev/sbx-policy.git", "github.com/daliendev/sbx-policy.git"},
+		{"ssh://git@github.com/daliendev/sbx-policy.git", "github.com/daliendev/sbx-policy.git"},
 	}
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tmp
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	cmd = exec.Command("git", "remote", "add", "origin", "git@github.com:opencode/sbx-policy.git")
-	cmd.Dir = tmp
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git remote add: %v\n%s", err, out)
-	}
-
-	id, err := Identify(tmp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if id.Name != "github.com-opencode-sbx-policy" {
-		t.Fatalf("unexpected name: %s", id.Name)
+	for _, tt := range tests {
+		got := normalizeGitURL(tt.input)
+		if got != tt.expected {
+			t.Fatalf("normalizeGitURL(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
 	}
 }

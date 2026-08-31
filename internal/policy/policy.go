@@ -3,9 +3,10 @@ package policy
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/opencode/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/config"
 )
 
 // Validate checks that the policy conforms to the supported schema.
@@ -34,6 +35,32 @@ func Validate(p config.Policy) error {
 		}
 	}
 
+	for i, entry := range p.Ports {
+		if err := validatePortMapping(entry); err != nil {
+			return fmt.Errorf("ports entry %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+func validatePortMapping(entry string) error {
+	if strings.ContainsAny(entry, " \t\n\r") {
+		return fmt.Errorf("port mapping %q contains whitespace", entry)
+	}
+	parts := strings.Split(entry, ":")
+	if len(parts) > 2 {
+		return fmt.Errorf("port mapping %q contains more than one colon", entry)
+	}
+	for _, p := range parts {
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return fmt.Errorf("port mapping %q contains non-numeric port %q", entry, p)
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("port %d out of range (1-65535)", port)
+		}
+	}
 	return nil
 }
 
@@ -83,12 +110,10 @@ func Compare(old, new []string) Diff {
 	return Diff{Added: added, Removed: removed}
 }
 
-// HasChanges returns true if the diff is non-empty.
 func (d Diff) HasChanges() bool {
 	return len(d.Added) > 0 || len(d.Removed) > 0
 }
 
-// Format returns a human-readable string representation of the diff.
 func (d Diff) Format() string {
 	var b strings.Builder
 	for _, e := range d.Added {
@@ -97,5 +122,5 @@ func (d Diff) Format() string {
 	for _, e := range d.Removed {
 		fmt.Fprintf(&b, "  - %s\n", e)
 	}
-	return b.String()
+	return strings.TrimSuffix(b.String(), "\n")
 }

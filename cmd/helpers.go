@@ -1,0 +1,52 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/daliendev/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/policy"
+	"github.com/daliendev/sbx-policy/internal/project"
+)
+
+type projectContext struct {
+	root     string
+	policy   config.Policy
+	identity project.Identity
+}
+
+// resolveProject determines the project root, loads and validates the policy,
+// and identifies the project. It is used by any command that needs the full
+// project context (check, sync, etc.).
+func resolveProject() (projectContext, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return projectContext{}, fmt.Errorf("get working directory: %w", err)
+	}
+
+	root, err := config.FindProjectRoot(wd)
+	if err != nil {
+		return projectContext{}, err
+	}
+
+	p, err := config.Load(root)
+	if err != nil {
+		return projectContext{}, err
+	}
+
+	if err := policy.Validate(p); err != nil {
+		return projectContext{}, err
+	}
+
+	id, err := project.Identify(root)
+	if err != nil {
+		return projectContext{}, fmt.Errorf("identify project: %w", err)
+	}
+
+	return projectContext{root: root, policy: p, identity: id}, nil
+}
+
+// exitf returns a formatted error.
+func exitf(format string, args ...interface{}) error {
+	return fmt.Errorf(format, args...)
+}

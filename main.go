@@ -1,6 +1,6 @@
 package main
 
-import "github.com/opencode/sbx-policy/cmd"
+import "github.com/daliendev/sbx-policy/cmd"
 
 func main() {
 	cmd.Execute()

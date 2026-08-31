@@ -15,13 +15,13 @@ After syncing, you use `sbx` normally — `sbx-policy` does not wrap or replace 
 ## Installation
 
 ```bash
-go install github.com/opencode/sbx-policy@latest
+go install github.com/daliendev/sbx-policy@latest
 ```
 
 Or clone and build:
 
 ```bash
-git clone https://github.com/opencode/sbx-policy.git
+git clone https://github.com/daliendev/sbx-policy.git
 cd sbx-policy
 go build -o sbx-policy .
 ```
@@ -77,6 +77,10 @@ network_allowlist:
   - api.opencode.ai
   - registry.npmjs.org
   - github.com
+
+ports:
+  - "8080:3000"
+  - "3000"
 ```
 
 Rules:
@@ -87,6 +91,7 @@ Rules:
 - Entries may not contain commas or whitespace (matching Docker Sandbox requirements).
 - Optional `:port` suffixes are allowed.
 - Wildcard hostnames such as `*.githubusercontent.com` are preserved.
+- `ports` is optional. Each entry is either `host:sandbox` (e.g. `8080:3000`) or just `sandbox` (lets the OS pick a free host port).
 
 ## Commands
 

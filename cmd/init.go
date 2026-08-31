@@ -1,11 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/opencode/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -18,11 +19,13 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("get working directory: %w", err)
 		}
 
-		policyPath := config.PolicyFileName
-		fullPath := filepath.Join(wd, policyPath)
-		if _, err := os.Stat(fullPath); err == nil {
-			fmt.Printf("✓ %s already exists\n", policyPath)
+		root, err := config.FindProjectRoot(wd)
+		if err == nil {
+			ui.Success("%s already exists at %s", config.PolicyFileName, root)
 			return nil
+		}
+		if !errors.Is(err, config.ErrPolicyNotFound) {
+			return fmt.Errorf("search for existing policy: %w", err)
 		}
 
 		p := config.DefaultPolicy()
@@ -30,7 +33,7 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("✓ Created %s\n", policyPath)
+		ui.Success("Created %s", config.PolicyFileName)
 		return nil
 	},
 }

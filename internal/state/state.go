@@ -16,21 +16,22 @@ type Manager struct {
 type ProjectState struct {
 	Allowlist []string `json:"allowlist"`
 	Sandbox   string   `json:"sandbox,omitempty"`
+	Ports     []string `json:"ports,omitempty"`
 }
 
-// DefaultDir returns the default state directory.
 func DefaultDir() string {
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			configDir = filepath.Join(home, ".config")
+		} else {
+			configDir = os.TempDir()
 		}
 	}
 	return filepath.Join(configDir, "sbx-policy")
 }
 
-// NewManager creates a Manager using the default state directory.
 func NewManager() *Manager {
 	return &Manager{Dir: DefaultDir()}
 }
@@ -54,7 +55,6 @@ func (m *Manager) Load(key string) (ProjectState, bool, error) {
 	return s, true, nil
 }
 
-// Save writes the remembered state for the given project key.
 func (m *Manager) Save(key string, s ProjectState) error {
 	if err := os.MkdirAll(m.Dir, 0755); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
@@ -66,7 +66,7 @@ func (m *Manager) Save(key string, s ProjectState) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 

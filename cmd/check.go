@@ -1,13 +1,11 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
+	"errors"
 
-	"github.com/opencode/sbx-policy/internal/config"
-	"github.com/opencode/sbx-policy/internal/policy"
-	"github.com/opencode/sbx-policy/internal/project"
-	"github.com/opencode/sbx-policy/internal/state"
+	"github.com/daliendev/sbx-policy/internal/config"
+	"github.com/daliendev/sbx-policy/internal/state"
+	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -15,47 +13,31 @@ var checkCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Validate .sbx/policy.yaml",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wd, err := os.Getwd()
+		ctx, err := resolveProject()
 		if err != nil {
-			return fmt.Errorf("get working directory: %w", err)
-		}
-
-		root, err := config.FindProjectRoot(wd)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n\nRun 'sbx-policy init' to create one.\n", err)
-			os.Exit(1)
-		}
-
-		p, err := config.Load(root)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		if err := policy.Validate(p); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		identity, err := project.Identify(root)
-		if err != nil {
-			return fmt.Errorf("identify project: %w", err)
+			if errors.Is(err, config.ErrPolicyNotFound) {
+				return exitf("Error: %v\n\nRun 'sbx-policy init' to create one.\n", err)
+			}
+			return exitf("Error: %v\n", err)
 		}
 
 		mgr := state.NewManager()
-		stored, found, _ := mgr.Load(identity.StateKey())
+		stored, found, err := mgr.Load(ctx.identity.StateKey())
+		if err != nil {
+			ui.Warning("Could not load remembered state: %v", err)
+		}
 
-		sandbox := p.Sandbox
+		sandbox := ctx.policy.Sandbox
 		if sandbox == "" && found {
 			sandbox = stored.Sandbox
 		}
 
 		if sandbox != "" {
-			fmt.Printf("✓ .sbx/policy.yaml is valid (sandbox: %s)\n", sandbox)
+			ui.Success(".sbx/policy.yaml is valid (sandbox: %s)", sandbox)
 		} else {
-			fmt.Println("✓ .sbx/policy.yaml is valid")
-			fmt.Fprintln(os.Stderr, "⚠ Warning: no sandbox configured. 'sbx-policy sync' will fail until you set one.")
-			fmt.Fprintln(os.Stderr, "   Add 'sandbox: <name>' to .sbx/policy.yaml or pass --sandbox to sync.")
+			ui.Success(".sbx/policy.yaml is valid")
+			ui.Warning("No sandbox configured. 'sbx-policy sync' will fail until you set one.")
+			ui.Warning("Add 'sandbox: <name>' to .sbx/policy.yaml or pass --sandbox to sync.")
 		}
 		return nil
 	},

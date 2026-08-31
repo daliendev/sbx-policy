@@ -56,7 +56,7 @@ func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
 		// If sbx doesn't support "policy ls", we can't determine current state.
-		return nil, fmt.Errorf("sbx policy ls failed: %w", err)
+		return nil, fmt.Errorf("sbx policy ls failed: %w\noutput: %s", err, string(out))
 	}
 
 	var rules []string
@@ -109,8 +109,14 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 	if err != nil {
 		// LIMITATION: If we can't read current state, we add rules defensively.
 		// We skip removal because we can't verify ownership.
+		var addErrs []string
 		for _, h := range desired {
-			_ = c.AddNetworkRule(h, sandbox)
+			if addErr := c.AddNetworkRule(h, sandbox); addErr != nil {
+				addErrs = append(addErrs, addErr.Error())
+			}
+		}
+		if len(addErrs) > 0 {
+			return fmt.Errorf("unable to read current sbx state and failed to add some rules defensively: %w; add errors: %s", err, strings.Join(addErrs, "; "))
 		}
 		return fmt.Errorf("unable to read current sbx state; added desired rules defensively: %w", err)
 	}

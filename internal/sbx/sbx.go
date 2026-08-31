@@ -3,6 +3,7 @@ package sbx
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -100,11 +101,13 @@ func (c *Client) RemoveNetworkRule(host string, sandbox string) error {
 func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 	current, err := c.ListNetworkRules(sandbox)
 	if err != nil {
-		// LIMITATION: If we can't read current state, we add rules defensively.
+		allErrs := []error{err}
 		for _, h := range desired {
-			_ = c.AddNetworkRule(h, sandbox)
+			if addErr := c.AddNetworkRule(h, sandbox); addErr != nil {
+				allErrs = append(allErrs, addErr)
+			}
 		}
-		return fmt.Errorf("unable to read current sbx state; added desired rules defensively: %w", err)
+		return fmt.Errorf("unable to read current sbx state; attempted to add desired rules defensively: %w", errors.Join(allErrs...))
 	}
 
 	currentSet := make(map[string]struct{}, len(current))
@@ -217,53 +220,70 @@ func (c *Client) UnpublishPort(mapping string, sandbox string) error {
 	return nil
 }
 
-// normalizePortMapping expands a bare port like "3000" to "3000:3000".
-func normalizePortMapping(mapping string) string {
-	if !strings.Contains(mapping, ":") {
-		return mapping + ":" + mapping
-	}
-	return mapping
-}
-
 // SyncPorts ensures the given port mappings are present for a sandbox.
 // It is idempotent: repeated calls with the same list do not keep adding rules.
+// Bare ports like "3000" match any current mapping whose sandbox port is 3000.
 func (c *Client) SyncPorts(desired []string, sandbox string) error {
 	current, err := c.ListPorts(sandbox)
 	if err != nil {
+		allErrs := []error{err}
 		for _, m := range desired {
-			_ = c.PublishPort(normalizePortMapping(m), sandbox)
+			if pubErr := c.PublishPort(m, sandbox); pubErr != nil {
+				allErrs = append(allErrs, pubErr)
+			}
 		}
-		return fmt.Errorf("unable to read current sbx ports; added desired ports defensively: %w", err)
+		return fmt.Errorf("unable to read current sbx ports; attempted to add desired ports defensively: %w", errors.Join(allErrs...))
 	}
 
-	currentSet := make(map[string]struct{}, len(current))
-	for _, m := range current {
-		currentSet[m] = struct{}{}
+	// Determine which current ports are matched by desired
+	currentMatched := make(map[int]struct{}, len(current))
+	for i, cur := range current {
+		for _, d := range desired {
+			if portMatchesDesired(cur, d) {
+				currentMatched[i] = struct{}{}
+				break
+			}
+		}
 	}
 
-	normalizedDesired := make([]string, len(desired))
-	desiredSet := make(map[string]struct{}, len(desired))
-	for i, m := range desired {
-		nm := normalizePortMapping(m)
-		normalizedDesired[i] = nm
-		desiredSet[nm] = struct{}{}
-	}
-
-	for _, m := range normalizedDesired {
-		if _, ok := currentSet[m]; !ok {
-			if err := c.PublishPort(m, sandbox); err != nil {
+	// Remove unmatched current ports
+	for i, cur := range current {
+		if _, ok := currentMatched[i]; !ok {
+			if err := c.UnpublishPort(cur, sandbox); err != nil {
 				return err
 			}
 		}
 	}
 
-	for _, m := range current {
-		if _, ok := desiredSet[m]; !ok {
-			if err := c.UnpublishPort(m, sandbox); err != nil {
+	// Add desired ports that don't have a match in current
+	for _, d := range desired {
+		matched := false
+		for _, cur := range current {
+			if portMatchesDesired(cur, d) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			if err := c.PublishPort(d, sandbox); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+// portMatchesDesired reports whether a current port mapping satisfies a
+// desired entry. An exact match always satisfies. Additionally, a bare
+// desired port like "3000" matches any current mapping whose sandbox
+// port is 3000 (e.g. "49152:3000"), reflecting Docker-style behaviour.
+func portMatchesDesired(current, desired string) bool {
+	if current == desired {
+		return true
+	}
+	if !strings.Contains(desired, ":") {
+		return strings.HasSuffix(current, ":"+desired)
+	}
+	return false
 }

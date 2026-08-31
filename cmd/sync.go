@@ -59,13 +59,11 @@ func doSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no sandbox specified")
 	}
 
-	if !yesFlag && !isStdinTerminal() {
-		ui.Error("This appears to be a non-interactive environment.")
-		ui.Info("Use --yes to approve the sync without prompting.")
-		return fmt.Errorf("non-interactive environment")
+	ok, err := confirmSync(desiredAllowlist, desiredPorts, sandbox, stored.Allowlist, stored.Ports, found)
+	if err != nil {
+		return err
 	}
-
-	if !confirmSync(desiredAllowlist, desiredPorts, sandbox, stored.Allowlist, stored.Ports, found) {
+	if !ok {
 		ui.Info("Aborted.")
 		return fmt.Errorf("aborted")
 	}
@@ -86,9 +84,10 @@ func doSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// isStdinTerminal returns true when os.Stdin is a character device (i.e. an
-// interactive terminal), as opposed to a pipe or file redirect.
-func isStdinTerminal() bool {
+// isStdinCharDevice returns true when os.Stdin is a character device, as
+// opposed to a pipe or file redirect. Note: this does not guarantee an
+// interactive terminal (e.g. /dev/null is a character device).
+func isStdinCharDevice() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return false
@@ -113,9 +112,9 @@ func resolveSandbox(flag, policySandbox, storedSandbox string, found bool) strin
 
 // confirmSync prompts the user when the allowlist or ports changed, or when
 // there is no previous state. It returns true if the sync should proceed.
-func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) bool {
+func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
 	if yesFlag {
-		return true
+		return true, nil
 	}
 
 	allowlistDiff := policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist)
@@ -123,6 +122,11 @@ func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, stored
 	noChanges := !allowlistDiff.HasChanges() && !portsDiff.HasChanges()
 
 	if !found {
+		if !isStdinCharDevice() {
+			ui.Error("This appears to be a non-interactive environment.")
+			ui.Info("Use --yes to approve the sync without prompting.")
+			return false, fmt.Errorf("non-interactive environment")
+		}
 		ui.Info("No previous network policy found for this project.")
 		ui.Separator()
 		ui.Info("Sandbox: %s", sandbox)
@@ -133,12 +137,18 @@ func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, stored
 			ui.PrintList(desiredPorts, "•")
 		}
 		ui.Separator()
-		return ask("Initialize and continue? [Y/n] ", true)
+		return ask("Initialize and continue? [Y/n] ", true), nil
 	}
 
 	if noChanges {
 		ui.Success("Network allowlist and ports unchanged for sandbox %s", sandbox)
-		return true
+		return true, nil
+	}
+
+	if !isStdinCharDevice() {
+		ui.Error("This appears to be a non-interactive environment.")
+		ui.Info("Use --yes to approve the sync without prompting.")
+		return false, fmt.Errorf("non-interactive environment")
 	}
 
 	ui.Warning("Policy changed since last approval")
@@ -153,7 +163,7 @@ func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, stored
 		ui.Info("Ports:")
 		ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
 	}
-	return ask("Continue with the updated policy? [y/N] ", false)
+	return ask("Continue with the updated policy? [y/N] ", false), nil
 }
 
 func ask(prompt string, defaultYes bool) bool {

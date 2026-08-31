@@ -51,7 +51,7 @@ func TestSyncNetworkPolicyAddsMissing(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 4 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "new.com" {
+		if len(call) >= 5 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "new.com" {
 			found = true
 		}
 	}
@@ -72,7 +72,7 @@ func TestSyncNetworkPolicyRemovesExtra(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 4 && call[1] == "policy" && call[2] == "deny" && call[3] == "network" && call[4] == "example.com" {
+		if len(call) >= 5 && call[1] == "policy" && call[2] == "deny" && call[3] == "network" && call[4] == "example.com" {
 			found = true
 		}
 	}
@@ -92,7 +92,7 @@ func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
 
 	found := false
 	for _, call := range failRunner.calls {
-		if len(call) >= 4 && call[4] == "fallback.com" {
+		if len(call) >= 5 && call[4] == "fallback.com" {
 			found = true
 		}
 	}
@@ -112,7 +112,7 @@ func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 6 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
+		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
 			found = true
 		}
 	}
@@ -215,10 +215,10 @@ func (m *mockLsRunnerWithBarePort) Run(name string, arg ...string) ([]byte, erro
 }
 
 func TestSyncPortsBarePortIdempotent(t *testing.T) {
-	// First call: no ports present. Second call: port was published as 3000:3000.
+	// First call: no ports present. Second call: port was published with random host port.
 	mock := &mockLsRunnerWithBarePort{
 		beforePort: "",
-		afterPort:  "127.0.0.1:3000->3000/tcp",
+		afterPort:  "127.0.0.1:49152->3000/tcp",
 	}
 	client := &Client{Runner: mock}
 
@@ -228,18 +228,18 @@ func TestSyncPortsBarePortIdempotent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have published once with expanded mapping
+	// Should have published once with bare port
 	published := false
 	for _, call := range mock.calls {
-		if len(call) >= 5 && call[1] == "ports" && call[3] == "--publish" && call[4] == "3000:3000" {
+		if len(call) >= 5 && call[1] == "ports" && call[3] == "--publish" && call[4] == "3000" {
 			published = true
 		}
 	}
 	if !published {
-		t.Fatalf("expected publish call for 3000:3000, got calls: %v", mock.calls)
+		t.Fatalf("expected publish call for 3000, got calls: %v", mock.calls)
 	}
 
-	// Second sync should not publish again
+	// Second sync should not publish again because 49152:3000 satisfies bare port 3000
 	mock.calls = nil
 	err = client.SyncPorts([]string{"3000"}, "my-sandbox")
 	if err != nil {
@@ -293,23 +293,6 @@ func TestSyncPortsRemovesExtra(t *testing.T) {
 	}
 }
 
-func TestNormalizePortMapping(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"3000", "3000:3000"},
-		{"8080:3000", "8080:3000"},
-		{"127.0.0.1:8080:3000", "127.0.0.1:8080:3000"},
-	}
-	for _, tc := range tests {
-		got := normalizePortMapping(tc.input)
-		if got != tc.expected {
-			t.Errorf("normalizePortMapping(%q) = %q; want %q", tc.input, got, tc.expected)
-		}
-	}
-}
-
 type mockRunnerWithLsOutput struct {
 	calls  [][]string
 	output string
@@ -337,7 +320,7 @@ func TestRemoveNetworkRuleScoped(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if len(call) >= 6 && call[1] == "policy" && call[2] == "deny" && call[3] == "network" &&
+		if len(call) >= 7 && call[1] == "policy" && call[2] == "deny" && call[3] == "network" &&
 			call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "example.com" {
 			found = true
 		}

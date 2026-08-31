@@ -45,7 +45,7 @@ func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
 	}
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
-		return nil, fmt.Errorf("sbx policy ls failed: %w", err)
+		return nil, fmt.Errorf("sbx policy ls failed: %w\noutput: %s", err, string(out))
 	}
 
 	var rules []string

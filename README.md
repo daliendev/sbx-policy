@@ -47,13 +47,10 @@ source ~/.bashrc  # or ~/.zshrc
 # Create a new policy file in your project
 sbx-policy init
 
-# Edit .sbx/policy.yaml and add domains you need
-# Example:
-#   version: 1
-#   sandbox: my-project-sandbox
-#   network_allowlist:
-#     - github.com
-#     - registry.npmjs.org
+# Fill in the policy file (or edit it by hand)
+sbx-policy allow github.com registry.npmjs.org
+sbx-policy ports add 8080:3000
+sbx-policy sandbox set my-project-sandbox
 
 # Validate the policy file
 sbx-policy check
@@ -99,7 +96,14 @@ Rules:
 |---------|-------------|
 | `sbx-policy init` | Create `.sbx/policy.yaml` if it does not exist. |
 | `sbx-policy check` | Validate YAML syntax and schema. |
+| `sbx-policy allow <host>...` | Add hosts to the network allowlist. |
+| `sbx-policy ports add <mapping>...` | Add port mappings to the policy. |
+| `sbx-policy sandbox set <name>` | Set the target sandbox name in the policy. |
 | `sbx-policy sync` | Compare allowlist against remembered state, prompt if changed, then synchronize with `sbx` for a specific sandbox. |
+
+The `allow`, `ports add`, and `sandbox set` commands update `.sbx/policy.yaml`
+and, in an interactive terminal, offer to run `sbx-policy sync` right away (in
+non-interactive environments they print a hint instead).
 
 ## Example workflow
 

@@ -19,24 +19,18 @@ func Validate(p config.Policy) error {
 		return fmt.Errorf("network_allowlist must be a list")
 	}
 
-	if strings.ContainsAny(p.Sandbox, " \t\n\r") {
-		return fmt.Errorf("sandbox name %q contains whitespace", p.Sandbox)
+	if err := ValidateSandboxName(p.Sandbox); err != nil {
+		return err
 	}
 
 	for i, entry := range p.NetworkAllowlist {
-		if strings.TrimSpace(entry) == "" {
-			return fmt.Errorf("network_allowlist entry %d is empty", i)
-		}
-		if strings.Contains(entry, ",") {
-			return fmt.Errorf("network_allowlist entry %q contains a comma", entry)
-		}
-		if strings.ContainsAny(entry, " \t\n\r") {
-			return fmt.Errorf("network_allowlist entry %q contains whitespace", entry)
+		if err := ValidateNetworkEntry(entry); err != nil {
+			return fmt.Errorf("network_allowlist entry %d: %w", i, err)
 		}
 	}
 
 	for i, entry := range p.Ports {
-		if err := validatePortMapping(entry); err != nil {
+		if err := ValidatePortMapping(entry); err != nil {
 			return fmt.Errorf("ports entry %d: %w", i, err)
 		}
 	}
@@ -44,7 +38,32 @@ func Validate(p config.Policy) error {
 	return nil
 }
 
-func validatePortMapping(entry string) error {
+// ValidateSandboxName checks that a sandbox name does not contain whitespace.
+func ValidateSandboxName(name string) error {
+	if strings.ContainsAny(name, " \t\n\r") {
+		return fmt.Errorf("sandbox name %q contains whitespace", name)
+	}
+	return nil
+}
+
+// ValidateNetworkEntry checks a single network allowlist entry.
+func ValidateNetworkEntry(entry string) error {
+	if strings.TrimSpace(entry) == "" {
+		return fmt.Errorf("entry is empty")
+	}
+	if strings.Contains(entry, ",") {
+		return fmt.Errorf("entry %q contains a comma", entry)
+	}
+	if strings.ContainsAny(entry, " \t\n\r") {
+		return fmt.Errorf("entry %q contains whitespace", entry)
+	}
+	return nil
+}
+
+// ValidatePortMapping checks a single port mapping entry, either
+// hostPort:sandboxPort (e.g. "8080:3000") or a bare sandbox port
+// (e.g. "3000").
+func ValidatePortMapping(entry string) error {
 	if strings.ContainsAny(entry, " \t\n\r") {
 		return fmt.Errorf("port mapping %q contains whitespace", entry)
 	}

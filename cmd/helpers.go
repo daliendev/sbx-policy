@@ -7,6 +7,7 @@ import (
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
 	"github.com/daliendev/sbx-policy/internal/project"
+	"github.com/daliendev/sbx-policy/internal/ui"
 )
 
 type projectContext struct {
@@ -49,4 +50,40 @@ func resolveProject() (projectContext, error) {
 // exitf returns a formatted error.
 func exitf(format string, args ...interface{}) error {
 	return fmt.Errorf(format, args...)
+}
+
+// addUnique appends entries that are not already present in list.
+// It returns the updated list and the entries that were actually added.
+func addUnique(list []string, entries []string) ([]string, []string) {
+	seen := make(map[string]struct{}, len(list))
+	for _, e := range list {
+		seen[e] = struct{}{}
+	}
+	var added []string
+	for _, e := range entries {
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		list = append(list, e)
+		added = append(added, e)
+	}
+	return list, added
+}
+
+// offerSync prompts the user to run 'sbx-policy sync' immediately when stdin
+// is interactive; otherwise it prints a hint to run sync manually.
+// The sync runs with auto-approval to avoid a second confirmation prompt.
+func offerSync() error {
+	if !isStdinCharDevice() {
+		ui.Info("Run 'sbx-policy sync' to apply the changes.")
+		return nil
+	}
+	if !ask("Run 'sbx-policy sync' now? [Y/n] ", true) {
+		ui.Info("Run 'sbx-policy sync' to apply the changes.")
+		return nil
+	}
+	yesFlag = true
+	defer func() { yesFlag = false }()
+	return doSync(nil, nil)
 }

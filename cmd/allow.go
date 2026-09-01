@@ -12,9 +12,17 @@ import (
 var allowCmd = &cobra.Command{
 	Use:   "allow <host> [host...]",
 	Short: "Add hosts to the network allowlist in .sbx/policy.yaml",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Add hosts to the network allowlist in .sbx/policy.yaml.
+
+Hosts may be given as separate arguments, comma-separated within a single
+argument, or a mix of both:
+
+  sbx-policy allow github.com registry.npmjs.org
+  sbx-policy allow github.com,registry.npmjs.org`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		for _, entry := range args {
+		hosts := splitCommaSeparated(args)
+		for _, entry := range hosts {
 			if err := policy.ValidateNetworkEntry(entry); err != nil {
 				return exitf("Error: %v\n", err)
 			}
@@ -28,7 +36,7 @@ var allowCmd = &cobra.Command{
 			return exitf("Error: %v\n", err)
 		}
 
-		updated, added := addUnique(ctx.policy.NetworkAllowlist, args)
+		updated, added := addUnique(ctx.policy.NetworkAllowlist, hosts)
 		if len(added) == 0 {
 			ui.Success("All hosts already present in %s", config.PolicyFileName)
 			return nil

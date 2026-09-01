@@ -96,7 +96,7 @@ Rules:
 |---------|-------------|
 | `sbx-policy init` | Create `.sbx/policy.yaml` if it does not exist. |
 | `sbx-policy check` | Validate YAML syntax and schema. |
-| `sbx-policy allow <host>...` | Add hosts to the network allowlist. |
+| `sbx-policy allow <host>...` | Add hosts to the network allowlist. Hosts may be space-separated, comma-separated within one argument, or both. |
 | `sbx-policy ports add <mapping>...` | Add port mappings to the policy. |
 | `sbx-policy sandbox set <name>` | Set the target sandbox name in the policy. |
 | `sbx-policy sync` / `sync up` | Compare allowlist against remembered state, prompt if changed, then push `.sbx/policy.yaml` to `sbx` for a specific sandbox. |

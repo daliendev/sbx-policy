@@ -173,18 +173,28 @@ func (c *Client) RemoveNetworkRuleByID(ruleID string, sandbox string) error {
 	return nil
 }
 
+// SyncResult reports outcomes of SyncNetworkPolicy that a caller may need to
+// surface but that aren't errors.
+type SyncResult struct {
+	// SkippedRemovals lists hosts that should have been removed (they were
+	// present in sbx but not in the desired list) but couldn't be, because
+	// they belong to a rule that bundles more than one resource under a
+	// single ID — removing it would take its siblings with it.
+	SkippedRemovals []string
+}
+
 // SyncNetworkPolicy ensures the given allowlist is present in sbx, scoped to
 // sandbox, and that any rule previously scoped there but no longer in
 // desired is removed outright. It is idempotent: repeated calls with the
 // same list do not keep adding or removing rules.
-func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
+func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) (SyncResult, error) {
 	current, err := c.listScopedNetworkRules(sandbox)
 	if err != nil {
 		allErrs := []error{err}
 		if addErr := c.AddNetworkRules(desired, sandbox); addErr != nil {
 			allErrs = append(allErrs, addErr)
 		}
-		return fmt.Errorf("unable to read current sbx state; attempted to add desired rules defensively: %w", errors.Join(allErrs...))
+		return SyncResult{}, fmt.Errorf("unable to read current sbx state; attempted to add desired rules defensively: %w", errors.Join(allErrs...))
 	}
 
 	currentByHost := make(map[string]string, len(current)) // host -> ruleID ("" if not individually removable)
@@ -205,10 +215,11 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 	}
 	if len(toAdd) > 0 {
 		if err := c.AddNetworkRules(toAdd, sandbox); err != nil {
-			return err
+			return SyncResult{}, err
 		}
 	}
 
+	var result SyncResult
 	for host, ruleID := range currentByHost {
 		if _, ok := desiredSet[host]; ok {
 			continue
@@ -216,14 +227,15 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) error {
 		if ruleID == "" {
 			// Part of a bundled rule we can't safely narrow to this host
 			// alone; leave it alone rather than risk removing siblings.
+			result.SkippedRemovals = append(result.SkippedRemovals, host)
 			continue
 		}
 		if err := c.RemoveNetworkRuleByID(ruleID, sandbox); err != nil {
-			return err
+			return result, err
 		}
 	}
 
-	return nil
+	return result, nil
 }
 
 // ListPorts returns the current port mappings for a sandbox.

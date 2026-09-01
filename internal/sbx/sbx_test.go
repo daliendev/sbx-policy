@@ -63,7 +63,7 @@ func TestSyncNetworkPolicyIdempotent(t *testing.T) {
 	client := &Client{Runner: mock}
 
 	// First sync
-	err := client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
+	_, err := client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSyncNetworkPolicyIdempotent(t *testing.T) {
 	// Second sync with same list should not add or remove anything, because
 	// both hosts are already present with the same scope.
 	mock.calls = nil
-	err = client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
+	_, err = client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSyncNetworkPolicyAddsMissing(t *testing.T) {
 	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", nil)}
 	client := &Client{Runner: mock}
 
-	err := client.SyncNetworkPolicy([]string{"new.com", "other.com"}, "my-sandbox")
+	_, err := client.SyncNetworkPolicy([]string{"new.com", "other.com"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSyncNetworkPolicyRemovesExtra(t *testing.T) {
 	client := &Client{Runner: mock}
 
 	// current has github.com and example.com; desired only has github.com
-	err := client.SyncNetworkPolicy([]string{"github.com"}, "my-sandbox")
+	_, err := client.SyncNetworkPolicy([]string{"github.com"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSyncNetworkPolicyDoesNotRemoveBundledRule(t *testing.T) {
 	mock := &scriptedRunner{lsJSON: `{"rules":[{"id":"bundle","name":"bundle","policy_id":"p","scope":"sandbox:my-sandbox","applies_to":"sandbox:my-sandbox","resource_type":"network","decision":"allow","resources":["a.com","b.com"],"origin":"scoped","layer":"local","status":"active","editable":true,"sandbox_id":"my-sandbox"}]}`}
 	client := &Client{Runner: mock}
 
-	err := client.SyncNetworkPolicy([]string{}, "my-sandbox")
+	result, err := client.SyncNetworkPolicy([]string{}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,6 +146,18 @@ func TestSyncNetworkPolicyDoesNotRemoveBundledRule(t *testing.T) {
 			t.Fatalf("must not remove a bundled multi-resource rule by ID, got call: %v", call)
 		}
 	}
+
+	// The caller needs to know these hosts couldn't be removed, since they
+	// are silently left allowed in sbx rather than being cleaned up.
+	wantSkipped := map[string]bool{"a.com": true, "b.com": true}
+	if len(result.SkippedRemovals) != len(wantSkipped) {
+		t.Fatalf("expected SkippedRemovals %v, got: %v", wantSkipped, result.SkippedRemovals)
+	}
+	for _, h := range result.SkippedRemovals {
+		if !wantSkipped[h] {
+			t.Fatalf("unexpected host in SkippedRemovals: %s (got: %v)", h, result.SkippedRemovals)
+		}
+	}
 }
 
 func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
@@ -153,7 +165,7 @@ func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
 	client := &Client{Runner: mock}
 
 	desired := []string{"fallback.com", "second.example"}
-	err := client.SyncNetworkPolicy(desired, "my-sandbox")
+	_, err := client.SyncNetworkPolicy(desired, "my-sandbox")
 	if err == nil {
 		t.Fatal("expected error when list fails")
 	}
@@ -174,7 +186,7 @@ func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
 	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", nil)}
 	client := &Client{Runner: mock}
 
-	err := client.SyncNetworkPolicy([]string{"scoped.com"}, "my-sandbox")
+	_, err := client.SyncNetworkPolicy([]string{"scoped.com"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

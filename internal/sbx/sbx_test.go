@@ -275,17 +275,50 @@ func TestListNetworkRulesRequiresSandbox(t *testing.T) {
 	}
 }
 
-type mockLsRunner struct {
-	calls [][]string
+// portsScriptedRunner returns a scripted JSON response for "sbx ports
+// <sandbox> --json" calls (or a scripted error), and empty output for
+// --publish/--unpublish mutations, which don't parse their output.
+type portsScriptedRunner struct {
+	calls     [][]string
+	portsJSON string
+	portsErr  error
 }
 
-func (m *mockLsRunner) Run(name string, arg ...string) ([]byte, error) {
+func (m *portsScriptedRunner) Run(name string, arg ...string) ([]byte, error) {
 	m.calls = append(m.calls, append([]string{name}, arg...))
-	return []byte("SANDBOX         AGENT   STATUS   PORTS                    WORKSPACE\nmy-sandbox      claude  running  127.0.0.1:8080->3000/tcp /home/user/proj\n"), nil
+	for _, a := range arg {
+		if a == "--json" {
+			if m.portsErr != nil {
+				return nil, m.portsErr
+			}
+			return []byte(m.portsJSON), nil
+		}
+	}
+	return []byte(""), nil
+}
+
+// dualStackPortsJSON builds a "sbx ports --json" response with a
+// 127.0.0.1 + ::1 tcp entry for each hostPort:sandboxPort pair, mirroring
+// how a single "--publish" call binds both IP families by default.
+func dualStackPortsJSON(mappings ...[2]int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	first := true
+	for _, m := range mappings {
+		for _, ip := range []string{"127.0.0.1", "::1"} {
+			if !first {
+				b.WriteString(",")
+			}
+			first = false
+			fmt.Fprintf(&b, `{"host_ip":%q,"host_port":%d,"sandbox_port":%d,"protocol":"tcp"}`, ip, m[0], m[1])
+		}
+	}
+	b.WriteString("]")
+	return b.String()
 }
 
 func TestListPorts(t *testing.T) {
-	mock := &mockLsRunner{}
+	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
 	client := &Client{Runner: mock}
 
 	ports, err := client.ListPorts("my-sandbox")
@@ -297,23 +330,55 @@ func TestListPorts(t *testing.T) {
 	}
 }
 
-func TestListPortsExactMatch(t *testing.T) {
-	mock := &mockRunnerWithLsOutput{
-		output: "SANDBOX         AGENT   STATUS   PORTS                    WORKSPACE\nmy              claude  running  127.0.0.1:8080->3000/tcp /home/user/proj\nmy-sandbox      claude  running  127.0.0.1:9090->4000/tcp /home/user/proj2\n",
-	}
+// TestListPortsCollapsesDualStack ensures a single publish bound on both
+// 127.0.0.1 and ::1 (sbx's default) is reported once, not twice — otherwise
+// SyncPorts could issue a redundant (or failing) second --unpublish call.
+func TestListPortsCollapsesDualStack(t *testing.T) {
+	mock := &portsScriptedRunner{portsJSON: `[{"host_ip":"127.0.0.1","host_port":8080,"sandbox_port":8000,"protocol":"tcp"},{"host_ip":"::1","host_port":8080,"sandbox_port":8000,"protocol":"tcp"}]`}
 	client := &Client{Runner: mock}
 
-	ports, err := client.ListPorts("my")
+	ports, err := client.ListPorts("my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ports) != 1 || ports[0] != "8080:3000" {
-		t.Fatalf("expected [8080:3000], got: %v", ports)
+	if len(ports) != 1 || ports[0] != "8080:8000" {
+		t.Fatalf("expected a single deduplicated [8080:8000], got: %v", ports)
+	}
+}
+
+// TestListPortsPassesSandboxPositionally mirrors the same requirement as
+// "sbx policy ls": the sandbox is a positional argument, not a flag.
+func TestListPortsPassesSandboxPositionally(t *testing.T) {
+	mock := &portsScriptedRunner{portsJSON: "[]"}
+	client := &Client{Runner: mock}
+
+	if _, err := client.ListPorts("my-sandbox"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, call := range mock.calls {
+		if len(call) >= 3 && call[1] == "ports" && call[2] == "my-sandbox" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'sbx ports my-sandbox ...', got calls: %v", mock.calls)
+	}
+}
+
+func TestListPortsRequiresSandbox(t *testing.T) {
+	client := NewClient()
+	_, err := client.ListPorts("")
+	if err == nil {
+		t.Fatal("expected error when sandbox is empty")
+	}
+	if !strings.Contains(err.Error(), "sandbox name is required") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 
 func TestSyncPortsIdempotent(t *testing.T) {
-	mock := &mockLsRunner{}
+	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
 	client := &Client{Runner: mock}
 
 	err := client.SyncPorts([]string{"8080:3000"}, "my-sandbox")
@@ -321,47 +386,52 @@ func TestSyncPortsIdempotent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Second sync should not publish again
+	// Second sync should not publish/unpublish again (a listing call is
+	// still expected and fine).
 	mock.calls = nil
 	err = client.SyncPorts([]string{"8080:3000"}, "my-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, call := range mock.calls {
-		if len(call) >= 3 && call[1] == "ports" {
-			t.Fatalf("unexpected ports call: %v", call)
+		if len(call) >= 4 && call[1] == "ports" && (call[3] == "--publish" || call[3] == "--unpublish") {
+			t.Fatalf("unexpected mutating ports call: %v", call)
 		}
 	}
 }
 
-type mockLsRunnerWithBarePort struct {
-	calls      [][]string
-	callCount  int
-	beforePort string
-	afterPort  string
+// portsScriptedRunnerSequence returns one scripted "sbx ports --json"
+// response per successive listing call (holding the last one steady once
+// exhausted) — for tests where sbx's own visible state changes between an
+// initial sync and a follow-up idempotency check.
+type portsScriptedRunnerSequence struct {
+	calls     [][]string
+	responses []string
+	listCount int
 }
 
-func (m *mockLsRunnerWithBarePort) Run(name string, arg ...string) ([]byte, error) {
+func (m *portsScriptedRunnerSequence) Run(name string, arg ...string) ([]byte, error) {
 	m.calls = append(m.calls, append([]string{name}, arg...))
-	if len(arg) >= 1 && arg[0] == "ls" {
-		m.callCount++
-		if m.callCount == 1 {
-			return []byte("SANDBOX         AGENT   STATUS   PORTS                    WORKSPACE\nmy-sandbox      claude  running  " + m.beforePort + " /home/user/proj\n"), nil
+	for _, a := range arg {
+		if a == "--json" {
+			idx := m.listCount
+			if idx >= len(m.responses) {
+				idx = len(m.responses) - 1
+			}
+			m.listCount++
+			return []byte(m.responses[idx]), nil
 		}
-		return []byte("SANDBOX         AGENT   STATUS   PORTS                    WORKSPACE\nmy-sandbox      claude  running  " + m.afterPort + " /home/user/proj\n"), nil
-	}
-	if len(arg) >= 2 && arg[0] == "policy" && arg[1] == "ls" {
-		return []byte(""), nil
 	}
 	return []byte(""), nil
 }
 
 func TestSyncPortsBarePortIdempotent(t *testing.T) {
-	// First call: no ports present. Second call: port was published with random host port.
-	mock := &mockLsRunnerWithBarePort{
-		beforePort: "",
-		afterPort:  "127.0.0.1:49152->3000/tcp",
-	}
+	// First sync: no ports present. Second sync: the port was published
+	// with a random ephemeral host port.
+	mock := &portsScriptedRunnerSequence{responses: []string{
+		"[]",
+		dualStackPortsJSON([2]int{49152, 3000}),
+	}}
 	client := &Client{Runner: mock}
 
 	// First sync with bare port
@@ -388,14 +458,14 @@ func TestSyncPortsBarePortIdempotent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, call := range mock.calls {
-		if len(call) >= 3 && call[1] == "ports" {
-			t.Fatalf("unexpected ports call on second sync: %v", call)
+		if len(call) >= 4 && call[1] == "ports" && (call[3] == "--publish" || call[3] == "--unpublish") {
+			t.Fatalf("unexpected mutating ports call on second sync: %v", call)
 		}
 	}
 }
 
 func TestSyncPortsAddsMissing(t *testing.T) {
-	mock := &mockLsRunner{}
+	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
 	client := &Client{Runner: mock}
 
 	err := client.SyncPorts([]string{"9090:4000"}, "my-sandbox")
@@ -415,7 +485,7 @@ func TestSyncPortsAddsMissing(t *testing.T) {
 }
 
 func TestSyncPortsRemovesExtra(t *testing.T) {
-	mock := &mockLsRunner{}
+	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
 	client := &Client{Runner: mock}
 
 	// current has 8080:3000; desired is empty
@@ -433,22 +503,6 @@ func TestSyncPortsRemovesExtra(t *testing.T) {
 	if !found {
 		t.Fatalf("expected unpublish call for 8080:3000, got calls: %v", mock.calls)
 	}
-}
-
-type mockRunnerWithLsOutput struct {
-	calls  [][]string
-	output string
-}
-
-func (m *mockRunnerWithLsOutput) Run(name string, arg ...string) ([]byte, error) {
-	m.calls = append(m.calls, append([]string{name}, arg...))
-	if len(arg) >= 1 && arg[0] == "ls" {
-		return []byte(m.output), nil
-	}
-	if len(arg) >= 2 && arg[0] == "policy" && arg[1] == "ls" {
-		return []byte(""), nil
-	}
-	return []byte(""), nil
 }
 
 func TestRemoveNetworkRuleByIDScoped(t *testing.T) {

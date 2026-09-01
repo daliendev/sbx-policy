@@ -1,8 +1,6 @@
 package sbx
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,59 +236,53 @@ func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) (SyncResult
 	return result, nil
 }
 
-// ListPorts returns the current port mappings for a sandbox.
+// portMapping mirrors one entry in the array returned by
+// "sbx ports <sandbox> --json".
+type portMapping struct {
+	HostIP      string `json:"host_ip"`
+	HostPort    int    `json:"host_port"`
+	SandboxPort int    `json:"sandbox_port"`
+	Protocol    string `json:"protocol"`
+}
+
+// ListPorts returns the current port mappings for a sandbox, as
+// "hostPort:sandboxPort" strings.
 //
-// LIMITATION: sbx does not expose a structured API for port mappings.
-// We parse the output of "sbx ls" and look for tokens like "8080->3000/tcp".
+// "sbx ports --publish" binds a port on every IP family the sandbox has by
+// default (127.0.0.1 and ::1 for a dual-stack sandbox), so a single publish
+// shows up as multiple entries in the daemon's response that only differ by
+// host_ip. Those are deliberately collapsed into one mapping here: from
+// policy.yaml's point of view there is exactly one port mapping, regardless
+// of how many IP families it's bound on. Protocol is ignored for the same
+// reason — policy.yaml's mapping format (see ValidatePortMapping) has no way
+// to express it, so sbx-policy never manages per-protocol entries.
 func (c *Client) ListPorts(sandbox string) ([]string, error) {
-	out, err := c.Runner.Run("sbx", "ls")
-	if err != nil {
-		return nil, fmt.Errorf("sbx ls failed: %w", err)
+	if sandbox == "" {
+		return nil, fmt.Errorf("sandbox name is required to list ports")
 	}
 
-	var ports []string
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	firstLine := true
-	for scanner.Scan() {
-		line := scanner.Text()
-		if firstLine {
-			firstLine = false
-			continue // skip header
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		// Only look at lines that mention the requested sandbox.
-		if sandbox != "" && fields[0] != sandbox {
-			continue
-		}
-		// Heuristic: look for port mapping tokens like "127.0.0.1:8080->3000/tcp"
-		for _, field := range fields {
-			if !strings.Contains(field, "->") {
-				continue
-			}
-			mapping := strings.TrimSuffix(field, "/tcp")
-			mapping = strings.TrimSuffix(mapping, "/tcp4")
-			mapping = strings.TrimSuffix(mapping, "/tcp6")
-			mapping = strings.TrimSuffix(mapping, "/udp")
-			// Extract host:sandbox from "127.0.0.1:8080->3000" → "8080:3000"
-			idx := strings.LastIndex(mapping, "->")
-			if idx == -1 {
-				continue
-			}
-			sandboxPort := mapping[idx+2:]
-			before := mapping[:idx]
-			hostPort := before
-			if colon := strings.LastIndex(before, ":"); colon != -1 {
-				hostPort = before[colon+1:]
-			}
-			if hostPort != "" && sandboxPort != "" {
-				ports = append(ports, hostPort+":"+sandboxPort)
-			}
-		}
+	args := []string{"ports", sandbox, "--json"}
+	out, err := c.Runner.Run("sbx", args...)
+	if err != nil {
+		return nil, fmt.Errorf("sbx ports %s --json failed: %w\noutput: %s", sandbox, err, string(out))
 	}
-	return ports, scanner.Err()
+
+	var mappings []portMapping
+	if err := json.Unmarshal(out, &mappings); err != nil {
+		return nil, fmt.Errorf("parse sbx ports --json output: %w\noutput: %s", err, string(out))
+	}
+
+	seen := make(map[string]struct{}, len(mappings))
+	var ports []string
+	for _, m := range mappings {
+		mapping := fmt.Sprintf("%d:%d", m.HostPort, m.SandboxPort)
+		if _, ok := seen[mapping]; ok {
+			continue
+		}
+		seen[mapping] = struct{}{}
+		ports = append(ports, mapping)
+	}
+	return ports, nil
 }
 
 // PublishPort publishes a port mapping for a sandbox.

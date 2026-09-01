@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
@@ -52,6 +53,23 @@ func exitf(format string, args ...interface{}) error {
 	return fmt.Errorf(format, args...)
 }
 
+// splitCommaSeparated flattens each arg by splitting it on commas and
+// trimming surrounding whitespace, so "a.com,b.com" and "a.com b.com" (and
+// any mix of the two) both expand to the same set of entries.
+func splitCommaSeparated(args []string) []string {
+	var out []string
+	for _, a := range args {
+		for _, part := range strings.Split(a, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // addUnique appends entries that are not already present in list.
 // It returns the updated list and the entries that were actually added.
 func addUnique(list []string, entries []string) ([]string, []string) {
@@ -85,5 +103,5 @@ func offerSync() error {
 	}
 	yesFlag = true
 	defer func() { yesFlag = false }()
-	return doSync(nil, nil)
+	return doSyncUp(nil, nil)
 }

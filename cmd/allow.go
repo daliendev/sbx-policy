@@ -22,6 +22,9 @@ argument, or a mix of both:
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		hosts := splitCommaSeparated(args)
+		if len(hosts) == 0 {
+			return exitf("Error: no host found in arguments\n")
+		}
 		for _, entry := range hosts {
 			if err := policy.ValidateNetworkEntry(entry); err != nil {
 				return exitf("Error: %v\n", err)

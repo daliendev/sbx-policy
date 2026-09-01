@@ -20,11 +20,25 @@ var yesFlag bool
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Synchronize network allowlist with Docker Sandbox",
-	RunE:  doSync,
+	Short: "Synchronize network allowlist with Docker Sandbox (alias for 'sync up')",
+	RunE:  doSyncUp,
 }
 
-func doSync(cmd *cobra.Command, args []string) error {
+var syncUpCmd = &cobra.Command{
+	Use:   "up",
+	Short: "Push .sbx/policy.yaml's network allowlist and ports to sbx",
+	RunE:  doSyncUp,
+}
+
+var syncDownCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Pull the network allowlist and ports already configured in sbx into .sbx/policy.yaml",
+	RunE:  doSyncDown,
+}
+
+// doSyncUp pushes .sbx/policy.yaml (the desired state) to sbx, warning when
+// it differs from the last state we know sbx approved.
+func doSyncUp(cmd *cobra.Command, args []string) error {
 	ctx, err := resolveProject()
 	if err != nil {
 		if errors.Is(err, config.ErrPolicyNotFound) {
@@ -81,6 +95,94 @@ func doSync(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Success("Network allowlist and ports synchronized to sandbox %s", sandbox)
+	return nil
+}
+
+// doSyncDown pulls the network allowlist and ports already configured for
+// the sandbox in sbx (the source of truth here) into .sbx/policy.yaml,
+// warning when that would change the file.
+func doSyncDown(cmd *cobra.Command, args []string) error {
+	ctx, err := resolveProject()
+	if err != nil {
+		if errors.Is(err, config.ErrPolicyNotFound) {
+			return exitf("Error: %v\n\nRun 'sbx-policy init' to create one.\n", err)
+		}
+		return exitf("Error: %v\n", err)
+	}
+
+	mgr := state.NewManager()
+	key := ctx.identity.StateKey()
+	stored, found, err := mgr.Load(key)
+	if err != nil {
+		ui.Warning("Could not load remembered state: %v", err)
+	}
+
+	sandbox := resolveSandbox(sandboxFlag, ctx.policy.Sandbox, stored.Sandbox, found)
+	if sandbox == "" {
+		ui.Error("No sandbox specified for this project.")
+		ui.Separator()
+		ui.Info("sbx-policy sync down needs to know which sandbox to pull from.")
+		ui.Separator()
+		ui.Info("To specify a sandbox, use one of:")
+		ui.Info("  1. Pass --sandbox <name> to sbx-policy sync down")
+		ui.Info("  2. Add 'sandbox: <name>' to .sbx/policy.yaml")
+		return fmt.Errorf("no sandbox specified")
+	}
+
+	client := sbx.NewClient()
+	remoteAllowlist, err := client.ListNetworkRules(sandbox)
+	if err != nil {
+		return exitf("Error: %v\n", err)
+	}
+	remotePorts, err := client.ListPorts(sandbox)
+	if err != nil {
+		return exitf("Error: %v\n", err)
+	}
+
+	pulledAllowlist := policy.Normalize(remoteAllowlist)
+	pulledPorts := policy.Normalize(remotePorts)
+	allowlistDiff := policy.Compare(policy.Normalize(ctx.policy.NetworkAllowlist), pulledAllowlist)
+	portsDiff := policy.Compare(policy.Normalize(ctx.policy.Ports), pulledPorts)
+
+	if !allowlistDiff.HasChanges() && !portsDiff.HasChanges() {
+		ui.Success(".sbx/policy.yaml already matches sandbox %s", sandbox)
+		return nil
+	}
+
+	if !yesFlag {
+		if !isStdinCharDevice() {
+			ui.Error("This appears to be a non-interactive environment.")
+			ui.Info("Use --yes to approve the pull without prompting.")
+			return fmt.Errorf("non-interactive environment")
+		}
+		ui.Warning("Sandbox %s differs from .sbx/policy.yaml", sandbox)
+		ui.Separator()
+		if allowlistDiff.HasChanges() {
+			ui.Info("Network allowlist:")
+			ui.PrintDiff(allowlistDiff.Added, allowlistDiff.Removed)
+		}
+		if portsDiff.HasChanges() {
+			ui.Info("Ports:")
+			ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
+		}
+		ui.Separator()
+		if !ask("Overwrite .sbx/policy.yaml with the sandbox's current state? [y/N] ", false) {
+			ui.Info("Aborted.")
+			return fmt.Errorf("aborted")
+		}
+	}
+
+	ctx.policy.NetworkAllowlist = pulledAllowlist
+	ctx.policy.Ports = pulledPorts
+	if err := config.Write(ctx.root, ctx.policy); err != nil {
+		return err
+	}
+
+	if err := mgr.Save(key, state.ProjectState{Allowlist: pulledAllowlist, Sandbox: sandbox, Ports: pulledPorts}); err != nil {
+		ui.Warning("Could not save remembered state: %v", err)
+	}
+
+	ui.Success(".sbx/policy.yaml updated from sandbox %s", sandbox)
 	return nil
 }
 
@@ -181,7 +283,12 @@ func ask(prompt string, defaultYes bool) bool {
 }
 
 func init() {
+	syncCmd.AddCommand(syncUpCmd)
+	syncCmd.AddCommand(syncDownCmd)
 	rootCmd.AddCommand(syncCmd)
-	syncCmd.Flags().StringVar(&sandboxFlag, "sandbox", "", "Target sandbox name (default: read from policy file or remembered state)")
-	syncCmd.Flags().BoolVar(&yesFlag, "yes", false, "Approve the sync without prompting (useful in CI)")
+
+	// Persistent so 'sync up' and 'sync down' inherit them alongside the
+	// bare 'sync' (== 'sync up') alias.
+	syncCmd.PersistentFlags().StringVar(&sandboxFlag, "sandbox", "", "Target sandbox name (default: read from policy file or remembered state)")
+	syncCmd.PersistentFlags().BoolVar(&yesFlag, "yes", false, "Approve the sync without prompting (useful in CI)")
 }

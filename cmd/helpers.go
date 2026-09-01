@@ -85,5 +85,5 @@ func offerSync() error {
 	}
 	yesFlag = true
 	defer func() { yesFlag = false }()
-	return doSync(nil, nil)
+	return doSyncUp(nil, nil)
 }

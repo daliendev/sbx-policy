@@ -99,7 +99,8 @@ Rules:
 | `sbx-policy allow <host>...` | Add hosts to the network allowlist. |
 | `sbx-policy ports add <mapping>...` | Add port mappings to the policy. |
 | `sbx-policy sandbox set <name>` | Set the target sandbox name in the policy. |
-| `sbx-policy sync` | Compare allowlist against remembered state, prompt if changed, then synchronize with `sbx` for a specific sandbox. |
+| `sbx-policy sync` / `sync up` | Compare allowlist against remembered state, prompt if changed, then push `.sbx/policy.yaml` to `sbx` for a specific sandbox. |
+| `sbx-policy sync down` | Pull the network allowlist and ports already configured in `sbx` for a sandbox into `.sbx/policy.yaml`, prompting if it would change the file. |
 
 The `allow`, `ports add`, and `sandbox set` commands update `.sbx/policy.yaml`
 and, in an interactive terminal, offer to run `sbx-policy sync` right away (in
@@ -169,6 +170,28 @@ Then:
 ```bash
 sbx-run opencode .
 ```
+
+## Pulling in the other direction
+
+`sbx-policy sync` (== `sync up`) is a one-way push: it makes `sbx` match `.sbx/policy.yaml`.
+If a sandbox's network policy was changed directly through `sbx` (or you're adopting
+`sbx-policy` for a sandbox that already has rules), use `sync down` to go the other way —
+it makes `.sbx/policy.yaml` match what `sbx` currently has for that sandbox:
+
+```bash
+$ sbx-policy sync down --sandbox my-project-sandbox
+⚠ Sandbox my-project-sandbox differs from .sbx/policy.yaml
+
+Network allowlist:
+  + registry.npmjs.org
+  + deb.debian.org
+
+Overwrite .sbx/policy.yaml with the sandbox's current state? [y/N] y
+✓ .sbx/policy.yaml updated from sandbox my-project-sandbox
+```
+
+Only rules scoped specifically to that sandbox are pulled in — the host-wide defaults every
+sandbox gets (npm/PyPI/GitHub/etc.) are never written into a project's `.sbx/policy.yaml`.
 
 ## How remembered state works
 

@@ -1,6 +1,7 @@
 package sbx
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +17,24 @@ type Runner interface {
 // RealRunner is the production implementation that shells out to sbx.
 type RealRunner struct{}
 
+// Run executes sbx and returns stdout only. stdout and stderr are captured
+// separately (not via CombinedOutput) because sbx sometimes writes an
+// unrelated banner (e.g. an update notice) to stderr after a command
+// finishes; merging the two streams appends that banner right after JSON
+// written to stdout, which breaks json.Unmarshal (e.g. "invalid character
+// '╭' after top-level value" from "sbx policy ls --json"). On failure,
+// stderr is folded into the returned error so callers still get useful
+// diagnostics.
 func (r *RealRunner) Run(name string, arg ...string) ([]byte, error) {
 	cmd := exec.Command(name, arg...)
-	return cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil && stderr.Len() > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), err
 }
 
 // Client wraps interactions with the sbx CLI.

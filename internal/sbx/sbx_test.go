@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+// TestRealRunnerSeparatesStdoutStderr guards against a regression to
+// cmd.CombinedOutput(), which merges stdout and stderr into one buffer. sbx
+// sometimes writes an unrelated banner to stderr after a JSON command
+// finishes; if the two streams are merged, that banner gets appended right
+// after the JSON on stdout and breaks json.Unmarshal downstream (see
+// listScopedNetworkRules/ListPorts, which parse Run's output as JSON).
+func TestRealRunnerSeparatesStdoutStderr(t *testing.T) {
+	r := &RealRunner{}
+	out, err := r.Run("sh", "-c", `echo '{"ok":true}'; echo '╭ update available ╮' >&2`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != `{"ok":true}` {
+		t.Fatalf("expected stdout only (no stderr banner), got: %q", got)
+	}
+}
+
 // mockRunner is a dumb runner whose response content is irrelevant to the
 // call under test (only the recorded calls matter).
 type mockRunner struct {

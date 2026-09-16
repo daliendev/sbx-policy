@@ -24,6 +24,29 @@ func TestRealRunnerSeparatesStdoutStderr(t *testing.T) {
 	}
 }
 
+// TestDecodeJSONValueIgnoresBanner guards against a regression where sbx
+// writes its update-notice banner to stdout itself (not just stderr, which
+// TestRealRunnerSeparatesStdoutStderr already covers), either before or
+// after the JSON it prints for a --json command. json.Unmarshal rejects
+// that outright; decodeJSONValue must tolerate it on either side.
+func TestDecodeJSONValueIgnoresBanner(t *testing.T) {
+	cases := map[string]string{
+		"trailing banner": "{\"rules\":[]}\n╭ update available ╮\n",
+		"leading banner":  "╭ update available ╮\n{\"rules\":[]}\n",
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			var resp policyLsResponse
+			if err := decodeJSONValue([]byte(raw), &resp); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(resp.Rules) != 0 {
+				t.Fatalf("expected empty rules, got: %v", resp.Rules)
+			}
+		})
+	}
+}
+
 // mockRunner is a dumb runner whose response content is irrelevant to the
 // call under test (only the recorded calls matter).
 type mockRunner struct {
@@ -97,6 +120,34 @@ func TestSyncNetworkPolicyIdempotent(t *testing.T) {
 	for _, call := range mock.calls {
 		if len(call) >= 3 && call[1] == "policy" && (call[2] == "allow" || call[2] == "rm") {
 			t.Fatalf("unexpected mutating call: %v", call)
+		}
+	}
+}
+
+// TestSyncNetworkPolicyToleratesTrailingBanner reproduces the reported bug:
+// "sbx policy ls --json" succeeds but sbx appends an update-notice banner
+// (box-drawing characters) to stdout right after the JSON, which previously
+// made json.Unmarshal fail with "invalid character '╭' after top-level
+// value" and made sync fall back to defensively re-adding rules that were
+// already present.
+func TestSyncNetworkPolicyToleratesTrailingBanner(t *testing.T) {
+	lsJSON := networkRulesJSON("my-sandbox", map[string]string{
+		"inertiajs.com": "rule-inertia",
+		"laravel.com":   "rule-laravel",
+	})
+	mock := &scriptedRunner{lsJSON: lsJSON + "\n╭──────────────────────╮\n│ update available     │\n╰──────────────────────╯\n"}
+	client := &Client{Runner: mock}
+
+	result, err := client.SyncNetworkPolicy([]string{"inertiajs.com", "laravel.com"}, "my-sandbox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.SkippedRemovals) != 0 {
+		t.Fatalf("expected no skipped removals, got: %v", result.SkippedRemovals)
+	}
+	for _, call := range mock.calls {
+		if len(call) >= 3 && call[1] == "policy" && call[2] == "allow" {
+			t.Fatalf("expected no defensive re-add since rules already match, got calls: %v", mock.calls)
 		}
 	}
 }

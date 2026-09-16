@@ -46,6 +46,21 @@ func NewClient() *Client {
 	return &Client{Runner: &RealRunner{}}
 }
 
+// decodeJSONValue decodes the first top-level JSON value in b into v,
+// ignoring anything before or after it. Separating stdout from stderr (see
+// RealRunner.Run) stops sbx's update-notice banner from being appended when
+// it's written to stderr, but sbx has also been observed writing that same
+// banner to stdout — before or after the JSON it prints for a --json
+// command. json.Unmarshal rejects that outright ("invalid character '╭'
+// after top-level value"); a Decoder reads only one JSON value and leaves
+// the rest alone, so a banner on either side of it no longer breaks parsing.
+func decodeJSONValue(b []byte, v any) error {
+	if start := bytes.IndexAny(b, "{["); start > 0 {
+		b = b[start:]
+	}
+	return json.NewDecoder(bytes.NewReader(b)).Decode(v)
+}
+
 // policyRule mirrors one entry in the "rules" array returned by
 // "sbx policy ls <sandbox> --type network --json".
 type policyRule struct {
@@ -103,7 +118,7 @@ func (c *Client) listScopedNetworkRules(sandbox string) ([]networkRule, error) {
 	}
 
 	var resp policyLsResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
+	if err := decodeJSONValue(out, &resp); err != nil {
 		return nil, fmt.Errorf("parse sbx policy ls --json output: %w\noutput: %s", err, string(out))
 	}
 
@@ -284,7 +299,7 @@ func (c *Client) ListPorts(sandbox string) ([]string, error) {
 	}
 
 	var mappings []portMapping
-	if err := json.Unmarshal(out, &mappings); err != nil {
+	if err := decodeJSONValue(out, &mappings); err != nil {
 		return nil, fmt.Errorf("parse sbx ports --json output: %w\noutput: %s", err, string(out))
 	}
 

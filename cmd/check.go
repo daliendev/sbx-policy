@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/daliendev/sbx-policy/internal/config"
-	"github.com/daliendev/sbx-policy/internal/state"
 	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -21,24 +20,11 @@ var checkCmd = &cobra.Command{
 			return exitf("Error: %v\n", err)
 		}
 
-		mgr := state.NewManager()
-		stored, found, err := mgr.Load(ctx.identity.StateKey())
-		if err != nil {
-			ui.Warning("Could not load remembered state: %v", err)
+		if ctx.policy.Sandbox == "" {
+			return exitf("Error: no sandbox set in %s\n\nRun 'sbx-policy sandbox set <name>' to set one.\n", config.PolicyFileName)
 		}
 
-		sandbox := ctx.policy.Sandbox
-		if sandbox == "" && found {
-			sandbox = stored.Sandbox
-		}
-
-		if sandbox != "" {
-			ui.Success(".sbx/policy.yaml is valid (sandbox: %s)", sandbox)
-		} else {
-			ui.Success(".sbx/policy.yaml is valid")
-			ui.Warning("No sandbox configured. 'sbx-policy sync' will fail until you set one.")
-			ui.Warning("Add 'sandbox: <name>' to .sbx/policy.yaml or pass --sandbox to sync.")
-		}
+		ui.Success("%s is valid (sandbox: %s)", config.PolicyFileName, ctx.policy.Sandbox)
 		return nil
 	},
 }

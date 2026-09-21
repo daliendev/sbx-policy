@@ -90,9 +90,46 @@ func prepareSync() (*syncSetup, error) {
 	return &syncSetup{ctx: ctx, mgr: mgr, key: key, stored: stored, found: found, sandbox: sandbox}, nil
 }
 
-// doSyncUp pushes .sbx/policy.yaml (the desired state) to sbx. It plans
-// against sbx's actual state, shows what will change, and only then applies.
+// approval says how much of a sync plan the user has already agreed to.
+type approval int
+
+const (
+	// askUser prompts before applying any non-empty plan.
+	askUser approval = iota
+	// approveAdditions applies a plan that only adds things to sbx without
+	// asking (the user just ran a command that asked for them), but still
+	// asks when it would also remove something: that removal can't come from
+	// the command they ran, so it is sbx drift or an unsynced hand edit.
+	approveAdditions
+	// approveAll applies any plan without asking (--yes).
+	approveAll
+)
+
+// needsPrompt reports whether plan must be confirmed by the user.
+func (a approval) needsPrompt(plan reconcile.Plan) bool {
+	switch {
+	case plan.Empty():
+		return false
+	case a == approveAll:
+		return false
+	case a == approveAdditions:
+		return len(plan.RemoveRules) > 0 || len(plan.Unpublish) > 0
+	default:
+		return true
+	}
+}
+
+// doSyncUp is the 'sync' / 'sync up' entry point.
 func doSyncUp(cmd *cobra.Command, args []string) error {
+	if yesFlag {
+		return runSyncUp(approveAll)
+	}
+	return runSyncUp(askUser)
+}
+
+// runSyncUp pushes .sbx/policy.yaml (the desired state) to sbx. It plans
+// against sbx's actual state, shows what will change, and only then applies.
+func runSyncUp(appr approval) error {
 	s, err := prepareSync()
 	if err != nil {
 		return err
@@ -107,7 +144,7 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 		return exitf("Error: %v\n", err)
 	}
 
-	ok, err := confirmSync(plan, desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
+	ok, err := confirmSync(plan, appr, desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
 	if err != nil {
 		return err
 	}
@@ -255,26 +292,26 @@ func printPlan(plan reconcile.Plan) {
 }
 
 // confirmSync shows plan (what will actually change in sbx) and asks before
-// applying it. Nothing is asked when there is nothing to do or --yes was
-// given. The header says why the sync isn't a no-op: first sync, the policy
-// file changed since the last approval, or sbx drifted from the policy file
-// (someone changed it outside sbx-policy, and those changes will be undone).
-// It returns true if the sync should proceed.
-func confirmSync(plan reconcile.Plan, desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
+// applying it when appr requires it. The header says why the sync isn't a
+// no-op: first sync, the policy file changed since the last approval, or sbx
+// drifted from the policy file (someone changed it outside sbx-policy, and
+// those changes will be undone). It returns true if the sync should proceed.
+func confirmSync(plan reconcile.Plan, appr approval, desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
 	if plan.Empty() {
 		ui.Success("Sandbox %s already matches %s", sandbox, config.PolicyFileName)
 		return true, nil
 	}
 
-	fileChanged := found &&
-		(policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist).HasChanges() ||
-			policy.Compare(policy.Normalize(storedPorts), desiredPorts).HasChanges())
-
-	if !yesFlag {
+	prompt := appr.needsPrompt(plan)
+	if prompt {
 		if err := requireInteractive(); err != nil {
 			return false, err
 		}
 	}
+
+	fileChanged := found &&
+		(policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist).HasChanges() ||
+			policy.Compare(policy.Normalize(storedPorts), desiredPorts).HasChanges())
 	switch {
 	case !found:
 		ui.Info("No previous network policy found for this project.")
@@ -288,7 +325,7 @@ func confirmSync(plan reconcile.Plan, desiredAllowlist, desiredPorts []string, s
 	printPlan(plan)
 	ui.Separator()
 
-	if yesFlag {
+	if !prompt {
 		return true, nil
 	}
 	if !found {

@@ -119,14 +119,18 @@ $ sbx-policy init
 
 $ cat .sbx/policy.yaml
 version: 1
-sandbox: my-project-sandbox
-network_allowlist:
-  - github.com
-  - registry.npmjs.org
+network_allowlist: []
+
+$ sbx-policy allow github.com registry.npmjs.org
+✓ Added host(s):
+  • github.com
+  • registry.npmjs.org
+Run 'sbx-policy sync' now? [Y/n] n
+Run 'sbx-policy sync' to apply the changes.
 
 # First sync without a sandbox known
 $ sbx-policy sync
-Error: No sandbox specified for this project.
+✗ No sandbox specified for this project.
 
 sbx-policy sync scopes network rules to individual sandboxes
 instead of applying them globally.

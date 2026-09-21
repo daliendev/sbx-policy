@@ -99,7 +99,7 @@ Rules:
 | `sbx-policy allow <host>...` | Add hosts to the network allowlist. Hosts may be space-separated, comma-separated within one argument, or both. |
 | `sbx-policy ports add <mapping>...` | Add port mappings to the policy. |
 | `sbx-policy sandbox set <name>` | Set the target sandbox name in the policy. |
-| `sbx-policy sync` / `sync up` | Compare allowlist against remembered state, prompt if changed, then push `.sbx/policy.yaml` to `sbx` for a specific sandbox. |
+| `sbx-policy sync` / `sync up` | Compare `.sbx/policy.yaml` with what `sbx` actually has for the sandbox, show what will be added/removed, prompt, then apply it. |
 | `sbx-policy sync down` | Pull the network allowlist and ports already configured in `sbx` for a sandbox into `.sbx/policy.yaml`, prompting if it would change the file. |
 
 The `allow`, `ports add`, and `sandbox set` commands update `.sbx/policy.yaml`
@@ -147,13 +147,13 @@ $ sbx run opencode .
 
 # Later, the policy file changes
 $ sbx-policy sync
-⚠ Network allowlist changed since last approval
+⚠ Policy changed since last approval
 
 Sandbox: my-project-sandbox
-
+Network allowlist:
   + evil.com
 
-Continue with the updated policy? [y/N] n
+Continue with these changes? [y/N] n
 Aborted.
 ```
 
@@ -174,6 +174,8 @@ sbx-run opencode .
 ## Pulling in the other direction
 
 `sbx-policy sync` (== `sync up`) is a one-way push: it makes `sbx` match `.sbx/policy.yaml`.
+The confirmation lists what will change in `sbx` itself, so rules or ports added directly
+through `sbx` show up as removals (and are undone) instead of going unnoticed.
 If a sandbox's network policy was changed directly through `sbx` (or you're adopting
 `sbx-policy` for a sandbox that already has rules), use `sync down` to go the other way —
 it makes `.sbx/policy.yaml` match what `sbx` currently has for that sandbox:

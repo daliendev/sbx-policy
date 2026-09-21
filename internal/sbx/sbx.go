@@ -3,7 +3,6 @@ package sbx
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -83,17 +82,17 @@ type policyLsResponse struct {
 	Rules []policyRule `json:"rules"`
 }
 
-// networkRule is a single host-level allow rule that sbx currently has
+// NetworkRule is a single host-level allow rule that sbx currently has
 // scoped to a sandbox, with enough information to remove it precisely.
 // ID is empty when the rule bundles more than one resource under a single
 // rule ID (as kit-provided policies sometimes do) and therefore cannot be
 // narrowed to a single host by ID.
-type networkRule struct {
+type NetworkRule struct {
 	ID   string
 	Host string
 }
 
-// listScopedNetworkRules returns the network allow rules that sbx currently
+// ListScopedNetworkRules returns the network allow rules that sbx currently
 // has scoped specifically to the given sandbox (scope "sandbox:<sandbox>",
 // decision "allow", editable).
 //
@@ -101,10 +100,10 @@ type networkRule struct {
 // default package-manager/cloud-infra bundles) are deliberately excluded:
 // they apply to every sandbox on the host and are not something a single
 // project's policy.yaml should own or ever attempt to remove. Mixing them
-// into the diff used by SyncNetworkPolicy would make "sync up" try to
+// into the diff used to reconcile would make "sync up" try to
 // revoke hundreds of unrelated default domains the moment they are absent
 // from a project's small network_allowlist.
-func (c *Client) listScopedNetworkRules(sandbox string) ([]networkRule, error) {
+func (c *Client) ListScopedNetworkRules(sandbox string) ([]NetworkRule, error) {
 	if sandbox == "" {
 		return nil, fmt.Errorf("sandbox name is required to list scoped network rules")
 	}
@@ -123,7 +122,7 @@ func (c *Client) listScopedNetworkRules(sandbox string) ([]networkRule, error) {
 	}
 
 	wantScope := "sandbox:" + sandbox
-	var rules []networkRule
+	var rules []NetworkRule
 	for _, r := range resp.Rules {
 		if r.ResourceType != "network" || r.Decision != "allow" || !r.Editable {
 			continue
@@ -138,17 +137,17 @@ func (c *Client) listScopedNetworkRules(sandbox string) ([]networkRule, error) {
 			id = ""
 		}
 		for _, host := range r.Resources {
-			rules = append(rules, networkRule{ID: id, Host: host})
+			rules = append(rules, NetworkRule{ID: id, Host: host})
 		}
 	}
 	return rules, nil
 }
 
 // ListNetworkRules returns the network allowlist entries that sbx currently
-// has scoped to the given sandbox. See listScopedNetworkRules for exactly
+// has scoped to the given sandbox. See ListScopedNetworkRules for exactly
 // what is (and isn't) included.
 func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
-	rules, err := c.listScopedNetworkRules(sandbox)
+	rules, err := c.ListScopedNetworkRules(sandbox)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +185,7 @@ func (c *Client) AddNetworkRules(hosts []string, sandbox string) error {
 }
 
 // RemoveNetworkRuleByID removes a single network allow rule via its rule
-// ID, as returned by ListNetworkRules/listScopedNetworkRules. This deletes
+// ID, as returned by ListNetworkRules/ListScopedNetworkRules. This deletes
 // the rule outright (via "sbx policy rm network --id"), unlike adding a
 // deny rule on top, which would leave the original allow rule in place.
 // Sandbox is required because the removal is scoped to it.
@@ -200,71 +199,6 @@ func (c *Client) RemoveNetworkRuleByID(ruleID string, sandbox string) error {
 		return fmt.Errorf("sbx policy rm network --id %s --sandbox %s: %w\noutput: %s", ruleID, sandbox, err, string(out))
 	}
 	return nil
-}
-
-// SyncResult reports outcomes of SyncNetworkPolicy that a caller may need to
-// surface but that aren't errors.
-type SyncResult struct {
-	// SkippedRemovals lists hosts that should have been removed (they were
-	// present in sbx but not in the desired list) but couldn't be, because
-	// they belong to a rule that bundles more than one resource under a
-	// single ID — removing it would take its siblings with it.
-	SkippedRemovals []string
-}
-
-// SyncNetworkPolicy ensures the given allowlist is present in sbx, scoped to
-// sandbox, and that any rule previously scoped there but no longer in
-// desired is removed outright. It is idempotent: repeated calls with the
-// same list do not keep adding or removing rules.
-func (c *Client) SyncNetworkPolicy(desired []string, sandbox string) (SyncResult, error) {
-	current, err := c.listScopedNetworkRules(sandbox)
-	if err != nil {
-		allErrs := []error{err}
-		if addErr := c.AddNetworkRules(desired, sandbox); addErr != nil {
-			allErrs = append(allErrs, addErr)
-		}
-		return SyncResult{}, fmt.Errorf("unable to read current sbx state; attempted to add desired rules defensively: %w", errors.Join(allErrs...))
-	}
-
-	currentByHost := make(map[string]string, len(current)) // host -> ruleID ("" if not individually removable)
-	for _, r := range current {
-		currentByHost[r.Host] = r.ID
-	}
-
-	desiredSet := make(map[string]struct{}, len(desired))
-	for _, h := range desired {
-		desiredSet[h] = struct{}{}
-	}
-
-	var toAdd []string
-	for _, h := range desired {
-		if _, ok := currentByHost[h]; !ok {
-			toAdd = append(toAdd, h)
-		}
-	}
-	if len(toAdd) > 0 {
-		if err := c.AddNetworkRules(toAdd, sandbox); err != nil {
-			return SyncResult{}, err
-		}
-	}
-
-	var result SyncResult
-	for host, ruleID := range currentByHost {
-		if _, ok := desiredSet[host]; ok {
-			continue
-		}
-		if ruleID == "" {
-			// Part of a bundled rule we can't safely narrow to this host
-			// alone; leave it alone rather than risk removing siblings.
-			result.SkippedRemovals = append(result.SkippedRemovals, host)
-			continue
-		}
-		if err := c.RemoveNetworkRuleByID(ruleID, sandbox); err != nil {
-			return result, err
-		}
-	}
-
-	return result, nil
 }
 
 // portMapping mirrors one entry in the array returned by
@@ -316,43 +250,7 @@ func (c *Client) ListPorts(sandbox string) ([]string, error) {
 	return ports, nil
 }
 
-// PortPublishError reports that sbx refused to publish one port mapping
-// (e.g. the host port is already in use), as opposed to a failure elsewhere
-// in the sync. Callers can use FailedPortMappings to tell which entries are
-// at fault.
-type PortPublishError struct {
-	Mapping string
-	Err     error
-}
-
-func (e *PortPublishError) Error() string { return e.Err.Error() }
-func (e *PortPublishError) Unwrap() error { return e.Err }
-
-// FailedPortMappings returns the mappings that sbx refused to publish, found
-// anywhere in err's tree (including errors joined by SyncPorts' defensive
-// path). It returns nil when err holds no *PortPublishError.
-func FailedPortMappings(err error) []string {
-	var failed []string
-	var walk func(error)
-	walk = func(e error) {
-		switch x := e.(type) {
-		case nil:
-		case *PortPublishError:
-			failed = append(failed, x.Mapping)
-		case interface{ Unwrap() []error }:
-			for _, child := range x.Unwrap() {
-				walk(child)
-			}
-		case interface{ Unwrap() error }:
-			walk(x.Unwrap())
-		}
-	}
-	walk(err)
-	return failed
-}
-
-// PublishPort publishes a port mapping for a sandbox. A failure from sbx
-// itself is returned as a *PortPublishError.
+// PublishPort publishes a port mapping for a sandbox.
 func (c *Client) PublishPort(mapping string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to publish ports")
@@ -360,10 +258,7 @@ func (c *Client) PublishPort(mapping string, sandbox string) error {
 	args := []string{"ports", sandbox, "--publish", mapping}
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
-		return &PortPublishError{
-			Mapping: mapping,
-			Err:     fmt.Errorf("sbx ports %s --publish %s: %w\noutput: %s", sandbox, mapping, err, string(out)),
-		}
+		return fmt.Errorf("sbx ports %s --publish %s: %w\noutput: %s", sandbox, mapping, err, string(out))
 	}
 	return nil
 }
@@ -379,72 +274,4 @@ func (c *Client) UnpublishPort(mapping string, sandbox string) error {
 		return fmt.Errorf("sbx ports %s --unpublish %s: %w\noutput: %s", sandbox, mapping, err, string(out))
 	}
 	return nil
-}
-
-// SyncPorts ensures the given port mappings are present for a sandbox.
-// It is idempotent: repeated calls with the same list do not keep adding rules.
-// Bare ports like "3000" match any current mapping whose sandbox port is 3000.
-func (c *Client) SyncPorts(desired []string, sandbox string) error {
-	current, err := c.ListPorts(sandbox)
-	if err != nil {
-		allErrs := []error{err}
-		for _, m := range desired {
-			if pubErr := c.PublishPort(m, sandbox); pubErr != nil {
-				allErrs = append(allErrs, pubErr)
-			}
-		}
-		return fmt.Errorf("unable to read current sbx ports; attempted to add desired ports defensively: %w", errors.Join(allErrs...))
-	}
-
-	// Determine which current ports are matched by desired
-	currentMatched := make(map[int]struct{}, len(current))
-	for i, cur := range current {
-		for _, d := range desired {
-			if portMatchesDesired(cur, d) {
-				currentMatched[i] = struct{}{}
-				break
-			}
-		}
-	}
-
-	// Remove unmatched current ports
-	for i, cur := range current {
-		if _, ok := currentMatched[i]; !ok {
-			if err := c.UnpublishPort(cur, sandbox); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Add desired ports that don't have a match in current
-	for _, d := range desired {
-		matched := false
-		for _, cur := range current {
-			if portMatchesDesired(cur, d) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			if err := c.PublishPort(d, sandbox); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// portMatchesDesired reports whether a current port mapping satisfies a
-// desired entry. An exact match always satisfies. Additionally, a bare
-// desired port like "3000" matches any current mapping whose sandbox
-// port is 3000 (e.g. "49152:3000"), reflecting Docker-style behaviour.
-func portMatchesDesired(current, desired string) bool {
-	if current == desired {
-		return true
-	}
-	if !strings.Contains(desired, ":") {
-		return strings.HasSuffix(current, ":"+desired)
-	}
-	return false
 }

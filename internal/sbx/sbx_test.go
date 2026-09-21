@@ -1,7 +1,6 @@
 package sbx
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -96,181 +95,6 @@ func networkRulesJSON(sandbox string, hostToRuleID map[string]string) string {
 	}
 	b.WriteString(`]}`)
 	return b.String()
-}
-
-func TestSyncNetworkPolicyIdempotent(t *testing.T) {
-	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", map[string]string{
-		"github.com":  "rule-github",
-		"example.com": "rule-example",
-	})}
-	client := &Client{Runner: mock}
-
-	// First sync
-	_, err := client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Second sync with same list should not add or remove anything, because
-	// both hosts are already present with the same scope.
-	mock.calls = nil
-	_, err = client.SyncNetworkPolicy([]string{"github.com", "example.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, call := range mock.calls {
-		if len(call) >= 3 && call[1] == "policy" && (call[2] == "allow" || call[2] == "rm") {
-			t.Fatalf("unexpected mutating call: %v", call)
-		}
-	}
-}
-
-// TestSyncNetworkPolicyToleratesTrailingBanner reproduces the reported bug:
-// "sbx policy ls --json" succeeds but sbx appends an update-notice banner
-// (box-drawing characters) to stdout right after the JSON, which previously
-// made json.Unmarshal fail with "invalid character '╭' after top-level
-// value" and made sync fall back to defensively re-adding rules that were
-// already present.
-func TestSyncNetworkPolicyToleratesTrailingBanner(t *testing.T) {
-	lsJSON := networkRulesJSON("my-sandbox", map[string]string{
-		"inertiajs.com": "rule-inertia",
-		"laravel.com":   "rule-laravel",
-	})
-	mock := &scriptedRunner{lsJSON: lsJSON + "\n╭──────────────────────╮\n│ update available     │\n╰──────────────────────╯\n"}
-	client := &Client{Runner: mock}
-
-	result, err := client.SyncNetworkPolicy([]string{"inertiajs.com", "laravel.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result.SkippedRemovals) != 0 {
-		t.Fatalf("expected no skipped removals, got: %v", result.SkippedRemovals)
-	}
-	for _, call := range mock.calls {
-		if len(call) >= 3 && call[1] == "policy" && call[2] == "allow" {
-			t.Fatalf("expected no defensive re-add since rules already match, got calls: %v", mock.calls)
-		}
-	}
-}
-
-func TestSyncNetworkPolicyAddsMissing(t *testing.T) {
-	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", nil)}
-	client := &Client{Runner: mock}
-
-	_, err := client.SyncNetworkPolicy([]string{"new.com", "other.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" &&
-			call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "new.com,other.com" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected batch add call for missing hosts, got calls: %v", mock.calls)
-	}
-}
-
-func TestSyncNetworkPolicyRemovesExtra(t *testing.T) {
-	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", map[string]string{
-		"github.com":  "rule-github",
-		"example.com": "rule-example",
-	})}
-	client := &Client{Runner: mock}
-
-	// current has github.com and example.com; desired only has github.com
-	_, err := client.SyncNetworkPolicy([]string{"github.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 7 && call[1] == "policy" && call[2] == "rm" && call[3] == "network" &&
-			call[4] == "--id" && call[5] == "rule-example" && call[6] == "--sandbox" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected 'policy rm network --id rule-example --sandbox my-sandbox' call, got calls: %v", mock.calls)
-	}
-}
-
-func TestSyncNetworkPolicyDoesNotRemoveBundledRule(t *testing.T) {
-	// A rule bundling more than one resource under a single ID (as
-	// kit-managed policies can) must never be removed by ID, since that
-	// would take every resource in the bundle with it.
-	mock := &scriptedRunner{lsJSON: `{"rules":[{"id":"bundle","name":"bundle","policy_id":"p","scope":"sandbox:my-sandbox","applies_to":"sandbox:my-sandbox","resource_type":"network","decision":"allow","resources":["a.com","b.com"],"origin":"scoped","layer":"local","status":"active","editable":true,"sandbox_id":"my-sandbox"}]}`}
-	client := &Client{Runner: mock}
-
-	result, err := client.SyncNetworkPolicy([]string{}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, call := range mock.calls {
-		if len(call) >= 3 && call[1] == "policy" && call[2] == "rm" {
-			t.Fatalf("must not remove a bundled multi-resource rule by ID, got call: %v", call)
-		}
-	}
-
-	// The caller needs to know these hosts couldn't be removed, since they
-	// are silently left allowed in sbx rather than being cleaned up.
-	wantSkipped := map[string]bool{"a.com": true, "b.com": true}
-	if len(result.SkippedRemovals) != len(wantSkipped) {
-		t.Fatalf("expected SkippedRemovals %v, got: %v", wantSkipped, result.SkippedRemovals)
-	}
-	for _, h := range result.SkippedRemovals {
-		if !wantSkipped[h] {
-			t.Fatalf("unexpected host in SkippedRemovals: %s (got: %v)", h, result.SkippedRemovals)
-		}
-	}
-}
-
-func TestSyncNetworkPolicyFallbackWhenListFails(t *testing.T) {
-	mock := &scriptedRunner{lsErr: fmt.Errorf("sbx policy ls not supported")}
-	client := &Client{Runner: mock}
-
-	desired := []string{"fallback.com", "second.example"}
-	_, err := client.SyncNetworkPolicy(desired, "my-sandbox")
-	if err == nil {
-		t.Fatal("expected error when list fails")
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" &&
-			call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "fallback.com,second.example" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected defensive batch add for desired hosts, got calls: %v", mock.calls)
-	}
-}
-
-func TestSyncNetworkPolicyScopedToSandbox(t *testing.T) {
-	mock := &scriptedRunner{lsJSON: networkRulesJSON("my-sandbox", nil)}
-	client := &Client{Runner: mock}
-
-	_, err := client.SyncNetworkPolicy([]string{"scoped.com"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 7 && call[1] == "policy" && call[2] == "allow" && call[3] == "network" && call[4] == "--sandbox" && call[5] == "my-sandbox" && call[6] == "scoped.com" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected scoped add call for scoped.com, got calls: %v", mock.calls)
-	}
 }
 
 // TestListNetworkRulesNeverUsesSandboxFlag ensures the workaround remains:
@@ -448,134 +272,6 @@ func TestListPortsRequiresSandbox(t *testing.T) {
 	}
 }
 
-func TestSyncPortsIdempotent(t *testing.T) {
-	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
-	client := &Client{Runner: mock}
-
-	err := client.SyncPorts([]string{"8080:3000"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Second sync should not publish/unpublish again (a listing call is
-	// still expected and fine).
-	mock.calls = nil
-	err = client.SyncPorts([]string{"8080:3000"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, call := range mock.calls {
-		if len(call) >= 4 && call[1] == "ports" && (call[3] == "--publish" || call[3] == "--unpublish") {
-			t.Fatalf("unexpected mutating ports call: %v", call)
-		}
-	}
-}
-
-// portsScriptedRunnerSequence returns one scripted "sbx ports --json"
-// response per successive listing call (holding the last one steady once
-// exhausted) — for tests where sbx's own visible state changes between an
-// initial sync and a follow-up idempotency check.
-type portsScriptedRunnerSequence struct {
-	calls     [][]string
-	responses []string
-	listCount int
-}
-
-func (m *portsScriptedRunnerSequence) Run(name string, arg ...string) ([]byte, error) {
-	m.calls = append(m.calls, append([]string{name}, arg...))
-	for _, a := range arg {
-		if a == "--json" {
-			idx := m.listCount
-			if idx >= len(m.responses) {
-				idx = len(m.responses) - 1
-			}
-			m.listCount++
-			return []byte(m.responses[idx]), nil
-		}
-	}
-	return []byte(""), nil
-}
-
-func TestSyncPortsBarePortIdempotent(t *testing.T) {
-	// First sync: no ports present. Second sync: the port was published
-	// with a random ephemeral host port.
-	mock := &portsScriptedRunnerSequence{responses: []string{
-		"[]",
-		dualStackPortsJSON([2]int{49152, 3000}),
-	}}
-	client := &Client{Runner: mock}
-
-	// First sync with bare port
-	err := client.SyncPorts([]string{"3000"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have published once with bare port
-	published := false
-	for _, call := range mock.calls {
-		if len(call) >= 5 && call[1] == "ports" && call[3] == "--publish" && call[4] == "3000" {
-			published = true
-		}
-	}
-	if !published {
-		t.Fatalf("expected publish call for 3000, got calls: %v", mock.calls)
-	}
-
-	// Second sync should not publish again because 49152:3000 satisfies bare port 3000
-	mock.calls = nil
-	err = client.SyncPorts([]string{"3000"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, call := range mock.calls {
-		if len(call) >= 4 && call[1] == "ports" && (call[3] == "--publish" || call[3] == "--unpublish") {
-			t.Fatalf("unexpected mutating ports call on second sync: %v", call)
-		}
-	}
-}
-
-func TestSyncPortsAddsMissing(t *testing.T) {
-	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
-	client := &Client{Runner: mock}
-
-	err := client.SyncPorts([]string{"9090:4000"}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 5 && call[1] == "ports" && call[2] == "my-sandbox" && call[3] == "--publish" && call[4] == "9090:4000" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected publish call for 9090:4000, got calls: %v", mock.calls)
-	}
-}
-
-func TestSyncPortsRemovesExtra(t *testing.T) {
-	mock := &portsScriptedRunner{portsJSON: dualStackPortsJSON([2]int{8080, 3000})}
-	client := &Client{Runner: mock}
-
-	// current has 8080:3000; desired is empty
-	err := client.SyncPorts([]string{}, "my-sandbox")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	found := false
-	for _, call := range mock.calls {
-		if len(call) >= 5 && call[1] == "ports" && call[2] == "my-sandbox" && call[3] == "--unpublish" && call[4] == "8080:3000" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected unpublish call for 8080:3000, got calls: %v", mock.calls)
-	}
-}
-
 func TestRemoveNetworkRuleByIDScoped(t *testing.T) {
 	mock := &mockRunner{}
 	client := &Client{Runner: mock}
@@ -639,73 +335,84 @@ func TestUnpublishPortRequiresSandbox(t *testing.T) {
 	}
 }
 
-// failingPublishRunner lists no current ports and fails "--publish" for the
-// mappings in failOn, so SyncPorts' publish failures can be exercised.
-type failingPublishRunner struct {
-	failOn   map[string]bool
-	listFail bool
-}
+// TestListNetworkRulesToleratesTrailingBanner reproduces the reported bug:
+// "sbx policy ls --json" succeeds but sbx appends an update-notice banner
+// (box-drawing characters) to stdout right after the JSON, which previously
+// made json.Unmarshal fail with "invalid character '╭' after top-level
+// value" and made sync fall back to defensively re-adding rules that were
+// already present.
+func TestListNetworkRulesToleratesTrailingBanner(t *testing.T) {
+	lsJSON := networkRulesJSON("my-sandbox", map[string]string{"laravel.com": "rule-laravel"})
+	mock := &scriptedRunner{lsJSON: lsJSON + "\n╭──────────────────────╮\n│ update available     │\n╰──────────────────────╯\n"}
+	client := &Client{Runner: mock}
 
-func (m *failingPublishRunner) Run(name string, arg ...string) ([]byte, error) {
-	for i, a := range arg {
-		if a == "--json" {
-			if m.listFail {
-				return nil, errors.New("sbx unavailable")
-			}
-			return []byte("[]"), nil
-		}
-		if a == "--publish" && i+1 < len(arg) && m.failOn[arg[i+1]] {
-			return []byte("address already in use"), errors.New("exit status 1")
-		}
+	rules, err := client.ListScopedNetworkRules("my-sandbox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	return []byte(""), nil
-}
-
-func TestSyncPortsReportsFailedMapping(t *testing.T) {
-	client := &Client{Runner: &failingPublishRunner{failOn: map[string]bool{"49969:49969": true}}}
-
-	err := client.SyncPorts([]string{"18080:3000", "49969:49969"}, "my-sandbox")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	var pubErr *PortPublishError
-	if !errors.As(err, &pubErr) || pubErr.Mapping != "49969:49969" {
-		t.Fatalf("expected *PortPublishError for 49969:49969, got: %v", err)
-	}
-	if got := FailedPortMappings(err); !reflect.DeepEqual(got, []string{"49969:49969"}) {
-		t.Fatalf("FailedPortMappings = %v, want [49969:49969]", got)
-	}
-	if !strings.Contains(err.Error(), "address already in use") {
-		t.Fatalf("expected sbx output in message, got: %v", err)
+	if len(rules) != 1 || rules[0] != (NetworkRule{ID: "rule-laravel", Host: "laravel.com"}) {
+		t.Fatalf("got rules %v", rules)
 	}
 }
 
-// When the current ports can't be read, SyncPorts tries every mapping and
-// joins the errors; every rejected mapping must still be reported.
-func TestFailedPortMappingsFromDefensivePath(t *testing.T) {
-	client := &Client{Runner: &failingPublishRunner{
-		listFail: true,
-		failOn:   map[string]bool{"8080:3000": true, "9090:9000": true},
-	}}
+// A rule bundling more than one resource under a single ID (as kit-managed
+// policies can) must come back without an ID, so callers never remove it by
+// ID and take every resource in the bundle with it.
+func TestListScopedNetworkRulesBundledRuleHasNoID(t *testing.T) {
+	mock := &scriptedRunner{lsJSON: `{"rules":[{"id":"bundle","name":"bundle","policy_id":"p","scope":"sandbox:my-sandbox","applies_to":"sandbox:my-sandbox","resource_type":"network","decision":"allow","resources":["a.com","b.com"],"origin":"scoped","layer":"local","status":"active","editable":true,"sandbox_id":"my-sandbox"}]}`}
+	client := &Client{Runner: mock}
 
-	err := client.SyncPorts([]string{"8080:3000", "8081:3001", "9090:9000"}, "my-sandbox")
-	want := []string{"8080:3000", "9090:9000"}
-	if got := FailedPortMappings(err); !reflect.DeepEqual(got, want) {
-		t.Fatalf("FailedPortMappings = %v, want %v", got, want)
+	rules, err := client.ListScopedNetworkRules("my-sandbox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []NetworkRule{{Host: "a.com"}, {Host: "b.com"}}
+	if len(rules) != 2 || rules[0] != want[0] || rules[1] != want[1] {
+		t.Fatalf("got %v, want %v", rules, want)
 	}
 }
 
-func TestFailedPortMappingsIgnoresOtherErrors(t *testing.T) {
-	if got := FailedPortMappings(nil); got != nil {
-		t.Fatalf("nil error: got %v", got)
+func TestAddNetworkRulesBatchesAndScopesToSandbox(t *testing.T) {
+	mock := &scriptedRunner{}
+	client := &Client{Runner: mock}
+
+	if err := client.AddNetworkRules([]string{"new.com", "other.com"}, "my-sandbox"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// sbx unreachable while listing, nothing to publish: not a mapping fault.
-	client := &Client{Runner: &failingPublishRunner{listFail: true}}
-	err := client.SyncPorts(nil, "my-sandbox")
-	if got := FailedPortMappings(err); got != nil {
-		t.Fatalf("got %v, want nil", got)
+	want := []string{"sbx", "policy", "allow", "network", "--sandbox", "my-sandbox", "new.com,other.com"}
+	if len(mock.calls) != 1 || !reflect.DeepEqual(mock.calls[0], want) {
+		t.Fatalf("got calls %v, want [%v]", mock.calls, want)
 	}
-	if got := FailedPortMappings(errors.New("boom")); got != nil {
-		t.Fatalf("plain error: got %v", got)
+}
+
+func TestAddNetworkRulesNoHostsIsNoop(t *testing.T) {
+	mock := &scriptedRunner{}
+	client := &Client{Runner: mock}
+
+	if err := client.AddNetworkRules(nil, "my-sandbox"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("expected no sbx call, got %v", mock.calls)
+	}
+}
+
+func TestPublishPort(t *testing.T) {
+	mock := &scriptedRunner{}
+	client := &Client{Runner: mock}
+
+	if err := client.PublishPort("8080:3000", "my-sandbox"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"sbx", "ports", "my-sandbox", "--publish", "8080:3000"}
+	if len(mock.calls) != 1 || !reflect.DeepEqual(mock.calls[0], want) {
+		t.Fatalf("got calls %v, want [%v]", mock.calls, want)
+	}
+}
+
+func TestPublishPortRequiresSandbox(t *testing.T) {
+	client := &Client{Runner: &scriptedRunner{}}
+	if err := client.PublishPort("8080:3000", ""); err == nil {
+		t.Fatal("expected error when sandbox is empty")
 	}
 }

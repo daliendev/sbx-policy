@@ -53,9 +53,32 @@ func NewClient() *Client {
 // command. json.Unmarshal rejects that outright ("invalid character '╭'
 // after top-level value"); a Decoder reads only one JSON value and leaves
 // the rest alone, so a banner on either side of it no longer breaks parsing.
+//
+// A leading banner may itself contain "{" or "[" (e.g. "[v1.2 available]"),
+// so every candidate start is tried in turn until one decodes. If none does,
+// the error of the first attempt is returned.
 func decodeJSONValue(b []byte, v any) error {
-	if start := bytes.IndexAny(b, "{["); start > 0 {
-		b = b[start:]
+	var firstErr error
+	for off := 0; off < len(b); {
+		i := bytes.IndexAny(b[off:], "{[")
+		if i < 0 {
+			break
+		}
+		start := off + i
+		var raw json.RawMessage
+		err := json.NewDecoder(bytes.NewReader(b[start:])).Decode(&raw)
+		if err == nil {
+			if err = json.Unmarshal(raw, v); err == nil {
+				return nil
+			}
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		off = start + 1
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 	return json.NewDecoder(bytes.NewReader(b)).Decode(v)
 }
@@ -156,12 +179,6 @@ func (c *Client) ListNetworkRules(sandbox string) ([]string, error) {
 		hosts = append(hosts, r.Host)
 	}
 	return hosts, nil
-}
-
-// AddNetworkRule adds a single network allowlist entry via sbx.
-// If sandbox is non-empty, the rule is scoped to that sandbox only.
-func (c *Client) AddNetworkRule(host string, sandbox string) error {
-	return c.AddNetworkRules([]string{host}, sandbox)
 }
 
 // AddNetworkRules adds one or more network allowlist entries via sbx in a

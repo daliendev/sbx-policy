@@ -326,16 +326,26 @@ func confirmSync(plan reconcile.Plan, appr approval, desiredAllowlist, desiredPo
 	if !prompt {
 		return true, nil
 	}
-	if !found {
+	// Removing anything from sbx is never the default answer, even on a first
+	// sync: an empty line or EOF must not revoke rules or ports.
+	destructive := len(plan.RemoveRules) > 0 || len(plan.Unpublish) > 0
+	switch {
+	case !found && destructive:
+		return ask("Initialize and continue (this removes entries from sbx)? [y/N] ", false), nil
+	case !found:
 		return ask("Initialize and continue? [Y/n] ", true), nil
+	default:
+		return ask("Continue with these changes? [y/N] ", false), nil
 	}
-	return ask("Continue with these changes? [y/N] ", false), nil
 }
+
+// stdin is shared by every prompt: a reader per call would buffer past the
+// first line and swallow the answer to the next question when input is piped.
+var stdin = bufio.NewReader(os.Stdin)
 
 func ask(prompt string, defaultYes bool) bool {
 	fmt.Print(prompt)
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := stdin.ReadString('\n')
 	if err != nil {
 		return defaultYes
 	}
@@ -353,6 +363,6 @@ func init() {
 
 	// Persistent so 'sync up' and 'sync down' inherit them alongside the
 	// bare 'sync' (== 'sync up') alias.
-	syncCmd.PersistentFlags().StringVar(&sandboxFlag, "sandbox", "", "Target sandbox name (default: read from policy file or remembered state)")
+	syncCmd.PersistentFlags().StringVar(&sandboxFlag, "sandbox", "", "Target sandbox name (default: sandbox from .sbx/policy.yaml)")
 	syncCmd.PersistentFlags().BoolVar(&yesFlag, "yes", false, "Approve the sync without prompting (useful in CI)")
 }

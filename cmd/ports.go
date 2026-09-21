@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
@@ -47,7 +48,16 @@ bare sandbox port (e.g. 3000, letting the OS pick a free host port).`,
 		}
 		ui.Success("Added port mapping(s):")
 		ui.PrintList(added, "•")
-		return offerSync()
+
+		if err := offerSync(); err != nil {
+			ctx.policy.Ports = removeEntries(ctx.policy.Ports, added)
+			if writeErr := config.Write(ctx.root, ctx.policy); writeErr != nil {
+				return errors.Join(err, fmt.Errorf("also failed to roll back %s: %w", config.PolicyFileName, writeErr))
+			}
+			ui.Warning("Sync failed; removed the new port mapping(s) from %s", config.PolicyFileName)
+			return err
+		}
+		return nil
 	},
 }
 

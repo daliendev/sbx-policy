@@ -1,7 +1,9 @@
 package sbx
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -634,5 +636,76 @@ func TestUnpublishPortRequiresSandbox(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sandbox name is required") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+// failingPublishRunner lists no current ports and fails "--publish" for the
+// mappings in failOn, so SyncPorts' publish failures can be exercised.
+type failingPublishRunner struct {
+	failOn   map[string]bool
+	listFail bool
+}
+
+func (m *failingPublishRunner) Run(name string, arg ...string) ([]byte, error) {
+	for i, a := range arg {
+		if a == "--json" {
+			if m.listFail {
+				return nil, errors.New("sbx unavailable")
+			}
+			return []byte("[]"), nil
+		}
+		if a == "--publish" && i+1 < len(arg) && m.failOn[arg[i+1]] {
+			return []byte("address already in use"), errors.New("exit status 1")
+		}
+	}
+	return []byte(""), nil
+}
+
+func TestSyncPortsReportsFailedMapping(t *testing.T) {
+	client := &Client{Runner: &failingPublishRunner{failOn: map[string]bool{"49969:49969": true}}}
+
+	err := client.SyncPorts([]string{"18080:3000", "49969:49969"}, "my-sandbox")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pubErr *PortPublishError
+	if !errors.As(err, &pubErr) || pubErr.Mapping != "49969:49969" {
+		t.Fatalf("expected *PortPublishError for 49969:49969, got: %v", err)
+	}
+	if got := FailedPortMappings(err); !reflect.DeepEqual(got, []string{"49969:49969"}) {
+		t.Fatalf("FailedPortMappings = %v, want [49969:49969]", got)
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("expected sbx output in message, got: %v", err)
+	}
+}
+
+// When the current ports can't be read, SyncPorts tries every mapping and
+// joins the errors; every rejected mapping must still be reported.
+func TestFailedPortMappingsFromDefensivePath(t *testing.T) {
+	client := &Client{Runner: &failingPublishRunner{
+		listFail: true,
+		failOn:   map[string]bool{"8080:3000": true, "9090:9000": true},
+	}}
+
+	err := client.SyncPorts([]string{"8080:3000", "8081:3001", "9090:9000"}, "my-sandbox")
+	want := []string{"8080:3000", "9090:9000"}
+	if got := FailedPortMappings(err); !reflect.DeepEqual(got, want) {
+		t.Fatalf("FailedPortMappings = %v, want %v", got, want)
+	}
+}
+
+func TestFailedPortMappingsIgnoresOtherErrors(t *testing.T) {
+	if got := FailedPortMappings(nil); got != nil {
+		t.Fatalf("nil error: got %v", got)
+	}
+	// sbx unreachable while listing, nothing to publish: not a mapping fault.
+	client := &Client{Runner: &failingPublishRunner{listFail: true}}
+	err := client.SyncPorts(nil, "my-sandbox")
+	if got := FailedPortMappings(err); got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+	if got := FailedPortMappings(errors.New("boom")); got != nil {
+		t.Fatalf("plain error: got %v", got)
 	}
 }

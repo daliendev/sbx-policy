@@ -105,6 +105,22 @@ func removeEntries(list []string, remove []string) []string {
 	return out
 }
 
+// intersectEntries returns the entries of list that also appear in other,
+// preserving list's order.
+func intersectEntries(list []string, other []string) []string {
+	keep := make(map[string]struct{}, len(other))
+	for _, e := range other {
+		keep[e] = struct{}{}
+	}
+	var out []string
+	for _, e := range list {
+		if _, ok := keep[e]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // offerSync prompts the user to run 'sbx-policy sync' immediately when stdin
 // is interactive; otherwise it prints a hint to run sync manually.
 // The sync runs with auto-approval to avoid a second confirmation prompt.

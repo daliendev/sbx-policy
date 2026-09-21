@@ -6,6 +6,7 @@ import (
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
+	"github.com/daliendev/sbx-policy/internal/sbx"
 	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -49,15 +50,25 @@ bare sandbox port (e.g. 3000, letting the OS pick a free host port).`,
 		ui.Success("Added port mapping(s):")
 		ui.PrintList(added, "•")
 
-		if err := offerSync(); err != nil {
-			ctx.policy.Ports = removeEntries(ctx.policy.Ports, added)
-			if writeErr := config.Write(ctx.root, ctx.policy); writeErr != nil {
-				return errors.Join(err, fmt.Errorf("also failed to roll back %s: %w", config.PolicyFileName, writeErr))
-			}
-			ui.Warning("Sync failed; removed the new port mapping(s) from %s", config.PolicyFileName)
+		err = offerSync()
+		if err == nil {
+			return nil
+		}
+
+		// Only roll back mappings this command added and sbx refused to
+		// publish: any other failure says nothing about the new entries, and
+		// the ones that were published (or never attempted) stay in the file.
+		rejected := intersectEntries(added, sbx.FailedPortMappings(err))
+		if len(rejected) == 0 {
 			return err
 		}
-		return nil
+		ctx.policy.Ports = removeEntries(ctx.policy.Ports, rejected)
+		if writeErr := config.Write(ctx.root, ctx.policy); writeErr != nil {
+			return errors.Join(err, fmt.Errorf("also failed to roll back %s: %w", config.PolicyFileName, writeErr))
+		}
+		ui.Warning("sbx rejected these port mapping(s); removed from %s:", config.PolicyFileName)
+		ui.PrintList(rejected, "•")
+		return err
 	},
 }
 

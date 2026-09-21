@@ -115,7 +115,8 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 		return exitf("Error: %v\n", err)
 	}
 	if err := client.SyncPorts(desiredPorts, s.sandbox); err != nil {
-		return exitf("Error: %v\n", err)
+		// %w keeps *sbx.PortPublishError reachable for 'ports add' rollback.
+		return exitf("Error: %w\n", err)
 	}
 
 	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: desiredAllowlist, Sandbox: s.sandbox, Ports: desiredPorts}); err != nil {

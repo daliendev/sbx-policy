@@ -233,7 +233,11 @@ func setSequence(m *yaml.Node, key string, entries []string, keep bool) {
 	if i := mapValue(m, key); i >= 0 && m.Content[i].Kind == yaml.SequenceNode {
 		prev := m.Content[i]
 		seq.HeadComment, seq.LineComment, seq.FootComment = prev.HeadComment, prev.LineComment, prev.FootComment
-		seq.Style = prev.Style & yaml.FlowStyle // keep "[a, b]" written inline
+		if len(prev.Content) > 0 {
+			// Keep "[a, b]" written inline. An empty "[]" (what init writes)
+			// says nothing about style, so it fills up as a block list.
+			seq.Style = prev.Style & yaml.FlowStyle
+		}
 		for _, item := range prev.Content {
 			old[item.Value] = append(old[item.Value], item)
 		}

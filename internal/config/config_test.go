@@ -313,3 +313,22 @@ func TestWriteKeepsPermissionsAndLeavesNoTempFile(t *testing.T) {
 		t.Fatalf("expected only policy.yaml in .sbx, got %v", entries)
 	}
 }
+
+func TestWriteFillsEmptyFlowListAsBlock(t *testing.T) {
+	tmp := t.TempDir()
+	writeRaw(t, tmp, "version: 1\nnetwork_allowlist: []\n")
+
+	p, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NetworkAllowlist = []string{"github.com", "example.com"}
+	if err := Write(tmp, p); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "version: 1\nnetwork_allowlist:\n  - github.com\n  - example.com\n"
+	if got := readRaw(t, tmp); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

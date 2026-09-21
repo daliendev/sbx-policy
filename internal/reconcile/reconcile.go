@@ -72,6 +72,78 @@ type PublishError struct {
 func (e *PublishError) Error() string { return e.Err.Error() }
 func (e *PublishError) Unwrap() error { return e.Err }
 
+// Current is a sandbox's state as sbx reports it.
+type Current struct {
+	Rules []sbx.NetworkRule
+	Ports []string
+}
+
+// Adopt returns local with sbx's current state folded in, for pulling sbx
+// changes into the policy file without rewriting what already matches:
+//   - an entry of local that sbx still satisfies is kept as written, in its
+//     original position (a bare "3000" stays "3000" while sbx has some
+//     "49152:3000", instead of being pinned to the host port sbx chose);
+//   - an entry of local that sbx no longer satisfies is dropped;
+//   - what sbx has that no entry of local covers is appended, sorted.
+//
+// It is pure and idempotent: Adopt(Adopt(l, c), c) equals Adopt(l, c).
+func Adopt(local Desired, cur Current) Desired {
+	hosts := make([]string, 0, len(cur.Rules))
+	for _, r := range cur.Rules {
+		hosts = append(hosts, r.Host)
+	}
+
+	var out Desired
+	inSbx := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		inSbx[h] = struct{}{}
+	}
+	tracked := make(map[string]struct{}, len(local.Allowlist))
+	for _, h := range local.Allowlist {
+		tracked[h] = struct{}{}
+		if _, ok := inSbx[h]; ok {
+			out.Allowlist = append(out.Allowlist, h)
+		}
+	}
+	var untracked []string
+	for _, h := range hosts {
+		if _, ok := tracked[h]; !ok {
+			untracked = append(untracked, h)
+		}
+	}
+	out.Allowlist = append(out.Allowlist, sortedUnique(untracked)...)
+
+	var untrackedPorts []string
+	for _, d := range local.Ports {
+		for _, c := range cur.Ports {
+			if portMatchesDesired(c, d) {
+				out.Ports = append(out.Ports, d)
+				break
+			}
+		}
+	}
+	for _, c := range cur.Ports {
+		if !matchesAny(c, local.Ports) {
+			untrackedPorts = append(untrackedPorts, c)
+		}
+	}
+	out.Ports = append(out.Ports, sortedUnique(untrackedPorts)...)
+	return out
+}
+
+func sortedUnique(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	var out []string
+	for _, e := range in {
+		if _, ok := seen[e]; !ok {
+			seen[e] = struct{}{}
+			out = append(out, e)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Diff computes the plan that turns the current state (network rules scoped
 // to the sandbox, and its port mappings) into desired. It is pure.
 //
@@ -162,19 +234,28 @@ func New(backend Backend) *Service {
 	return &Service{backend: backend}
 }
 
+// Current reads the sandbox's current state from sbx.
+func (s *Service) Current(sandbox string) (Current, error) {
+	rules, err := s.backend.ListScopedNetworkRules(sandbox)
+	if err != nil {
+		return Current{}, fmt.Errorf("unable to read current sbx network rules: %w", err)
+	}
+	ports, err := s.backend.ListPorts(sandbox)
+	if err != nil {
+		return Current{}, fmt.Errorf("unable to read current sbx ports: %w", err)
+	}
+	return Current{Rules: rules, Ports: ports}, nil
+}
+
 // Plan reads the sandbox's current state and returns what it takes to reach
 // desired. It changes nothing; if the current state can't be read it fails
 // rather than guessing.
 func (s *Service) Plan(sandbox string, desired Desired) (Plan, error) {
-	rules, err := s.backend.ListScopedNetworkRules(sandbox)
+	cur, err := s.Current(sandbox)
 	if err != nil {
-		return Plan{}, fmt.Errorf("unable to read current sbx network rules: %w", err)
+		return Plan{}, err
 	}
-	ports, err := s.backend.ListPorts(sandbox)
-	if err != nil {
-		return Plan{}, fmt.Errorf("unable to read current sbx ports: %w", err)
-	}
-	return Diff(desired, rules, ports), nil
+	return Diff(desired, cur.Rules, cur.Ports), nil
 }
 
 // Apply executes plan against sandbox: network rules first (adds, then

@@ -188,9 +188,14 @@ Network allowlist:
   + registry.npmjs.org
   + deb.debian.org
 
-Overwrite .sbx/policy.yaml with the sandbox's current state? [y/N] y
+Update .sbx/policy.yaml with the sandbox's current state? [y/N] y
 ✓ .sbx/policy.yaml updated from sandbox my-project-sandbox
 ```
+
+Entries the file already has and `sbx` still satisfies are left exactly as written — for
+instance a bare `"3000"` stays `"3000"` even though `sbx` reports the host port it picked
+(`49152:3000`). Only real differences are added or removed, and the file is not touched at all
+when there are none.
 
 Only rules scoped specifically to that sandbox are pulled in — the host-wide defaults every
 sandbox gets (npm/PyPI/GitHub/etc.) are never written into a project's `.sbx/policy.yaml`.

@@ -52,9 +52,8 @@ type syncSetup struct {
 }
 
 // prepareSync resolves the project and the target sandbox (CLI flag >
-// policy file > remembered state) — the setup shared by 'sync up' and
-// 'sync down'. It prints guidance and returns an error when no sandbox can
-// be resolved.
+// policy file) — the setup shared by 'sync up' and 'sync down'. It prints
+// guidance and returns an error when no sandbox can be resolved.
 func prepareSync() (*syncSetup, error) {
 	ctx, err := resolveProject()
 	if err != nil {
@@ -71,7 +70,7 @@ func prepareSync() (*syncSetup, error) {
 		ui.Warning("Could not load remembered state: %v", err)
 	}
 
-	sandbox := resolveSandbox(sandboxFlag, ctx.policy.Sandbox, stored.Sandbox, found)
+	sandbox := resolveSandbox(sandboxFlag, ctx.policy.Sandbox)
 	if sandbox == "" {
 		ui.Error("No sandbox specified for this project.")
 		ui.Separator()
@@ -79,8 +78,8 @@ func prepareSync() (*syncSetup, error) {
 		ui.Info("instead of applying them globally.")
 		ui.Separator()
 		ui.Info("To specify a sandbox, use one of:")
-		ui.Info("  1. Pass --sandbox <name> to sbx-policy sync")
-		ui.Info("  2. Add 'sandbox: <name>' to .sbx/policy.yaml")
+		ui.Info("  1. Run 'sbx-policy sandbox set <name>' (writes it to .sbx/policy.yaml)")
+		ui.Info("  2. Pass --sandbox <name> to sbx-policy sync")
 		ui.Separator()
 		ui.Info("To create a sandbox first, run your tool normally:")
 		ui.Info("  sbx run <tool> .")
@@ -121,7 +120,7 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 		return exitf("Error: %w\n", err)
 	}
 
-	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: desiredAllowlist, Sandbox: s.sandbox, Ports: desiredPorts}); err != nil {
+	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: desiredAllowlist, Ports: desiredPorts}); err != nil {
 		ui.Warning("Could not save remembered state: %v", err)
 	}
 
@@ -191,7 +190,7 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 	// Always record the current state, even when nothing changed, so a
 	// project pulled once (and never adopted a mismatched local edit)
 	// doesn't keep re-triggering "no previous state" prompts on 'sync up'.
-	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: pulledAllowlist, Sandbox: s.sandbox, Ports: pulledPorts}); err != nil {
+	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: pulledAllowlist, Ports: pulledPorts}); err != nil {
 		ui.Warning("Could not save remembered state: %v", err)
 	}
 
@@ -223,19 +222,15 @@ func requireInteractive() error {
 	return fmt.Errorf("non-interactive environment")
 }
 
-// resolveSandbox returns the effective sandbox name using the priority:
-// CLI flag > policy file > remembered state.
-func resolveSandbox(flag, policySandbox, storedSandbox string, found bool) string {
+// resolveSandbox returns the effective sandbox name: the CLI flag if given,
+// otherwise the policy file's. Deliberately no remembered-state fallback: the
+// target must come from the versioned file or an explicit flag, never from
+// a per-machine file the rest of the team doesn't have.
+func resolveSandbox(flag, policySandbox string) string {
 	if flag != "" {
 		return flag
 	}
-	if policySandbox != "" {
-		return policySandbox
-	}
-	if found {
-		return storedSandbox
-	}
-	return ""
+	return policySandbox
 }
 
 // printPlan shows what applying plan will change in sbx.

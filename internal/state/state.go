@@ -15,7 +15,6 @@ type Manager struct {
 // ProjectState is the stored state for a single project.
 type ProjectState struct {
 	Allowlist []string `json:"allowlist"`
-	Sandbox   string   `json:"sandbox,omitempty"`
 	Ports     []string `json:"ports,omitempty"`
 }
 

@@ -83,7 +83,7 @@ ports:
 Rules:
 
 - `version` must be `1`.
-- `sandbox` is optional. When set, `sbx-policy sync` targets this sandbox automatically. You can override it with the `--sandbox` CLI flag.
+- `sandbox` is required for `sync` and `check`: `sbx-policy sync` targets this sandbox. You can override it for one run with the `--sandbox` CLI flag. There is no per-machine fallback, so everyone who clones the repo syncs the same sandbox.
 - `network_allowlist` must be a list of non-empty strings.
 - Entries may not contain commas or whitespace (matching Docker Sandbox requirements).
 - Optional `:port` suffixes are allowed.
@@ -127,8 +127,8 @@ sbx-policy sync scopes network rules to individual sandboxes
 instead of applying them globally.
 
 To specify a sandbox, use one of:
-  1. Pass --sandbox <name> to sbx-policy sync
-  2. Add 'sandbox: <name>' to .sbx/policy.yaml
+  1. Run 'sbx-policy sandbox set <name>' (writes it to .sbx/policy.yaml)
+  2. Pass --sandbox <name> to sbx-policy sync
 
 # After creating a sandbox (or specifying it explicitly)
 $ sbx-policy sync --sandbox my-project-sandbox
@@ -197,11 +197,11 @@ sandbox gets (npm/PyPI/GitHub/etc.) are never written into a project's `.sbx/pol
 
 ## How remembered state works
 
-`sbx-policy` stores the last known/approved allowlist (and the associated sandbox name) in a local user-level directory (e.g. `~/.config/sbx-policy/`). This state is **not** committed to Git.
+`sbx-policy` stores the last known/approved allowlist and ports in a local user-level directory (e.g. `~/.config/sbx-policy/`). This state is **not** committed to Git.
 
 When you run `sbx-policy sync`, the tool compares the current `.sbx/policy.yaml` against the remembered state. If the allowlist changed, it shows a diff and asks for confirmation before touching `sbx`.
 
-The remembered sandbox name is used as a fallback when neither the `--sandbox` flag nor the `sandbox` field in `policy.yaml` is set.
+The remembered state no longer holds the sandbox: the target always comes from `policy.yaml` or `--sandbox`.
 
 **Important:** This is a change-detection convenience, not a security boundary. An agent that can modify `.sbx/policy.yaml` can also modify your source code. The actual sandbox enforcement remains Docker Sandbox's responsibility.
 

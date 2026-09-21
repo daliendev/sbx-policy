@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/daliendev/sbx-policy/internal/config"
 )
@@ -38,10 +39,31 @@ func Validate(p config.Policy) error {
 	return nil
 }
 
-// ValidateSandboxName checks that a sandbox name does not contain whitespace.
+// hasUnsafeRune reports whether s contains a control character (which
+// includes terminal escape sequences) or an invisible formatting character
+// such as a bidi override. Both let a policy file misrepresent itself in the
+// plan shown before the user confirms a sync.
+func hasUnsafeRune(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateSandboxName checks that a sandbox name is a plain word: no
+// whitespace, no control characters, and no leading "-" (it is handed to sbx
+// as a positional argument, where it would be read as a flag).
 func ValidateSandboxName(name string) error {
 	if strings.ContainsAny(name, " \t\n\r") {
 		return fmt.Errorf("sandbox name %q contains whitespace", name)
+	}
+	if hasUnsafeRune(name) {
+		return fmt.Errorf("sandbox name %q contains a control character", name)
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("sandbox name %q starts with '-'", name)
 	}
 	return nil
 }
@@ -57,6 +79,14 @@ func ValidateNetworkEntry(entry string) error {
 	if strings.ContainsAny(entry, " \t\n\r") {
 		return fmt.Errorf("entry %q contains whitespace", entry)
 	}
+	if hasUnsafeRune(entry) {
+		return fmt.Errorf("entry %q contains a control character", entry)
+	}
+	if strings.HasPrefix(entry, "-") {
+		// Passed to "sbx policy allow network" as an argument, where it would
+		// be parsed as a flag rather than a host.
+		return fmt.Errorf("entry %q starts with '-'", entry)
+	}
 	return nil
 }
 
@@ -66,6 +96,9 @@ func ValidateNetworkEntry(entry string) error {
 func ValidatePortMapping(entry string) error {
 	if strings.ContainsAny(entry, " \t\n\r") {
 		return fmt.Errorf("port mapping %q contains whitespace", entry)
+	}
+	if hasUnsafeRune(entry) {
+		return fmt.Errorf("port mapping %q contains a control character", entry)
 	}
 	parts := strings.Split(entry, ":")
 	if len(parts) > 2 {

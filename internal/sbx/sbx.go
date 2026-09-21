@@ -36,6 +36,16 @@ func (r *RealRunner) Run(name string, arg ...string) ([]byte, error) {
 	return stdout.Bytes(), err
 }
 
+// checkNotFlag rejects a value that sbx would parse as a flag instead of the
+// sandbox name, host or mapping it is meant to be. Callers validate policy
+// input already; this is the last check before the value reaches exec.
+func checkNotFlag(kind, v string) error {
+	if strings.HasPrefix(v, "-") {
+		return fmt.Errorf("%s %q starts with '-' and would be read by sbx as a flag", kind, v)
+	}
+	return nil
+}
+
 // Client wraps interactions with the sbx CLI.
 type Client struct {
 	Runner Runner
@@ -130,6 +140,9 @@ func (c *Client) ListScopedNetworkRules(sandbox string) ([]NetworkRule, error) {
 	if sandbox == "" {
 		return nil, fmt.Errorf("sandbox name is required to list scoped network rules")
 	}
+	if err := checkNotFlag("sandbox", sandbox); err != nil {
+		return nil, err
+	}
 
 	// The sandbox is a positional argument to "sbx policy ls", not a flag —
 	// "sbx policy ls --sandbox <name>" is rejected with "unknown flag".
@@ -188,6 +201,16 @@ func (c *Client) AddNetworkRules(hosts []string, sandbox string) error {
 	if len(hosts) == 0 {
 		return nil
 	}
+	if sandbox != "" {
+		if err := checkNotFlag("sandbox", sandbox); err != nil {
+			return err
+		}
+	}
+	for _, h := range hosts {
+		if err := checkNotFlag("host", h); err != nil {
+			return err
+		}
+	}
 	args := []string{"policy", "allow", "network"}
 	if sandbox != "" {
 		args = append(args, "--sandbox", sandbox)
@@ -209,6 +232,9 @@ func (c *Client) AddNetworkRules(hosts []string, sandbox string) error {
 func (c *Client) RemoveNetworkRuleByID(ruleID string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to remove a network rule")
+	}
+	if err := checkNotFlag("sandbox", sandbox); err != nil {
+		return err
 	}
 	args := []string{"policy", "rm", "network", "--id", ruleID, "--sandbox", sandbox}
 	out, err := c.Runner.Run("sbx", args...)
@@ -242,6 +268,9 @@ func (c *Client) ListPorts(sandbox string) ([]string, error) {
 	if sandbox == "" {
 		return nil, fmt.Errorf("sandbox name is required to list ports")
 	}
+	if err := checkNotFlag("sandbox", sandbox); err != nil {
+		return nil, err
+	}
 
 	args := []string{"ports", sandbox, "--json"}
 	out, err := c.Runner.Run("sbx", args...)
@@ -272,6 +301,12 @@ func (c *Client) PublishPort(mapping string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to publish ports")
 	}
+	if err := checkNotFlag("sandbox", sandbox); err != nil {
+		return err
+	}
+	if err := checkNotFlag("port mapping", mapping); err != nil {
+		return err
+	}
 	args := []string{"ports", sandbox, "--publish", mapping}
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
@@ -284,6 +319,12 @@ func (c *Client) PublishPort(mapping string, sandbox string) error {
 func (c *Client) UnpublishPort(mapping string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to unpublish ports")
+	}
+	if err := checkNotFlag("sandbox", sandbox); err != nil {
+		return err
+	}
+	if err := checkNotFlag("port mapping", mapping); err != nil {
+		return err
 	}
 	args := []string{"ports", sandbox, "--unpublish", mapping}
 	out, err := c.Runner.Run("sbx", args...)

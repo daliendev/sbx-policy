@@ -85,7 +85,7 @@ Rules:
 - `version` must be `1`.
 - `sandbox` is required for `sync` and `check`: `sbx-policy sync` targets this sandbox. You can override it for one run with the `--sandbox` CLI flag. There is no per-machine fallback, so everyone who clones the repo syncs the same sandbox.
 - `network_allowlist` must be a list of non-empty strings.
-- Entries may not contain commas or whitespace (matching Docker Sandbox requirements).
+- Entries may not contain commas, whitespace or control characters, and may not start with `-` (matching Docker Sandbox requirements).
 - Optional `:port` suffixes are allowed.
 - Wildcard hostnames such as `*.githubusercontent.com` are preserved.
 - `ports` is optional. Each entry is either `host:sandbox` (e.g. `8080:3000`) or just `sandbox` (lets the OS pick a free host port).

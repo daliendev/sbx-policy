@@ -31,7 +31,7 @@ func TestConfirmSyncFirstSyncDefaults(t *testing.T) {
 			t.Cleanup(func() { stdin = old })
 			stdin = bufio.NewReader(strings.NewReader("\n"))
 
-			got, err := confirmSync(tt.plan, askUser, nil, nil, "sb", nil, nil, false)
+			got, err := confirmSync(tt.plan, askUser, reconcile.Desired{}, nil, nil, "sb", nil, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}

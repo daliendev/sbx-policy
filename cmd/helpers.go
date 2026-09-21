@@ -8,6 +8,7 @@ import (
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
 	"github.com/daliendev/sbx-policy/internal/project"
+	"github.com/daliendev/sbx-policy/internal/reconcile"
 	"github.com/daliendev/sbx-policy/internal/ui"
 )
 
@@ -123,9 +124,11 @@ func intersectEntries(list []string, other []string) []string {
 
 // offerSync prompts the user to run 'sbx-policy sync' immediately when stdin
 // is interactive; otherwise it prints a hint to run sync manually.
-// The sync is approved without a second prompt unless it would remove
-// something from sbx (see approveAdditions).
-func offerSync() error {
+// requested is what the calling command just added to the policy file. The
+// sync is approved without a second prompt only for those additions; anything
+// else in the plan (a removal, or an entry the command did not add) is asked
+// about (see approveAdditions).
+func offerSync(requested reconcile.Desired) error {
 	if !isStdinCharDevice() {
 		ui.Info("Run 'sbx-policy sync' to apply the changes.")
 		return nil
@@ -134,5 +137,5 @@ func offerSync() error {
 		ui.Info("Run 'sbx-policy sync' to apply the changes.")
 		return nil
 	}
-	return runSyncUp(approveAdditions)
+	return runSyncUp(approveAdditions, requested)
 }

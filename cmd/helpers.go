@@ -89,6 +89,38 @@ func addUnique(list []string, entries []string) ([]string, []string) {
 	return list, added
 }
 
+// removeEntries returns list with every entry in remove filtered out.
+func removeEntries(list []string, remove []string) []string {
+	drop := make(map[string]struct{}, len(remove))
+	for _, e := range remove {
+		drop[e] = struct{}{}
+	}
+	var out []string
+	for _, e := range list {
+		if _, ok := drop[e]; ok {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// intersectEntries returns the entries of list that also appear in other,
+// preserving list's order.
+func intersectEntries(list []string, other []string) []string {
+	keep := make(map[string]struct{}, len(other))
+	for _, e := range other {
+		keep[e] = struct{}{}
+	}
+	var out []string
+	for _, e := range list {
+		if _, ok := keep[e]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // offerSync prompts the user to run 'sbx-policy sync' immediately when stdin
 // is interactive; otherwise it prints a hint to run sync manually.
 // The sync runs with auto-approval to avoid a second confirmation prompt.

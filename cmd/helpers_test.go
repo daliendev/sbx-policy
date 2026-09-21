@@ -52,3 +52,43 @@ func TestSplitCommaSeparated(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveEntries(t *testing.T) {
+	tests := []struct {
+		name   string
+		list   []string
+		remove []string
+		want   []string
+	}{
+		{"removes only listed entries", []string{"49969:49969", "18080:49969"}, []string{"49969:49969"}, []string{"18080:49969"}},
+		{"unknown entries are ignored", []string{"8080:3000"}, []string{"9999:9999"}, []string{"8080:3000"}},
+		{"removing everything yields empty", []string{"8080:3000"}, []string{"8080:3000"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := removeEntries(tt.list, tt.remove); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("removeEntries(%v, %v) = %v, want %v", tt.list, tt.remove, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIntersectEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		list  []string
+		other []string
+		want  []string
+	}{
+		{"keeps list order", []string{"a", "b", "c"}, []string{"c", "a"}, []string{"a", "c"}},
+		{"entries outside list are ignored", []string{"8080:3000"}, []string{"9999:9999"}, nil},
+		{"nil other yields nothing", []string{"8080:3000"}, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := intersectEntries(tt.list, tt.other); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("intersectEntries(%v, %v) = %v, want %v", tt.list, tt.other, got, tt.want)
+			}
+		})
+	}
+}

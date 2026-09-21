@@ -316,7 +316,43 @@ func (c *Client) ListPorts(sandbox string) ([]string, error) {
 	return ports, nil
 }
 
-// PublishPort publishes a port mapping for a sandbox.
+// PortPublishError reports that sbx refused to publish one port mapping
+// (e.g. the host port is already in use), as opposed to a failure elsewhere
+// in the sync. Callers can use FailedPortMappings to tell which entries are
+// at fault.
+type PortPublishError struct {
+	Mapping string
+	Err     error
+}
+
+func (e *PortPublishError) Error() string { return e.Err.Error() }
+func (e *PortPublishError) Unwrap() error { return e.Err }
+
+// FailedPortMappings returns the mappings that sbx refused to publish, found
+// anywhere in err's tree (including errors joined by SyncPorts' defensive
+// path). It returns nil when err holds no *PortPublishError.
+func FailedPortMappings(err error) []string {
+	var failed []string
+	var walk func(error)
+	walk = func(e error) {
+		switch x := e.(type) {
+		case nil:
+		case *PortPublishError:
+			failed = append(failed, x.Mapping)
+		case interface{ Unwrap() []error }:
+			for _, child := range x.Unwrap() {
+				walk(child)
+			}
+		case interface{ Unwrap() error }:
+			walk(x.Unwrap())
+		}
+	}
+	walk(err)
+	return failed
+}
+
+// PublishPort publishes a port mapping for a sandbox. A failure from sbx
+// itself is returned as a *PortPublishError.
 func (c *Client) PublishPort(mapping string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to publish ports")
@@ -324,7 +360,10 @@ func (c *Client) PublishPort(mapping string, sandbox string) error {
 	args := []string{"ports", sandbox, "--publish", mapping}
 	out, err := c.Runner.Run("sbx", args...)
 	if err != nil {
-		return fmt.Errorf("sbx ports %s --publish %s: %w\noutput: %s", sandbox, mapping, err, string(out))
+		return &PortPublishError{
+			Mapping: mapping,
+			Err:     fmt.Errorf("sbx ports %s --publish %s: %w\noutput: %s", sandbox, mapping, err, string(out)),
+		}
 	}
 	return nil
 }

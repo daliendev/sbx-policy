@@ -34,6 +34,8 @@ func TestDecodeJSONValueIgnoresBanner(t *testing.T) {
 	cases := map[string]string{
 		"trailing banner": "{\"rules\":[]}\n╭ update available ╮\n",
 		"leading banner":  "╭ update available ╮\n{\"rules\":[]}\n",
+		// The banner's own brackets must not be mistaken for the JSON start.
+		"leading banner with brackets": "╭─ Update [v1.2 available] {run sbx update} ─╮\n{\"rules\":[]}\n",
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {

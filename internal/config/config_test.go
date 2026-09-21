@@ -261,3 +261,55 @@ func TestWriteRoundTripsAndFillsEmptyList(t *testing.T) {
 		t.Fatalf("round trip: got %+v, want %+v", loaded, p)
 	}
 }
+
+func TestWriteKeepsFlowStyleLists(t *testing.T) {
+	tmp := t.TempDir()
+	writeRaw(t, tmp, "version: 1\nnetwork_allowlist: [github.com]\n")
+
+	p, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NetworkAllowlist = append(p.NetworkAllowlist, "example.com")
+	if err := Write(tmp, p); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "version: 1\nnetwork_allowlist: [github.com, example.com]\n"
+	if got := readRaw(t, tmp); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestWriteKeepsPermissionsAndLeavesNoTempFile(t *testing.T) {
+	tmp := t.TempDir()
+	writeRaw(t, tmp, "version: 1\nnetwork_allowlist: []\n")
+	path := filepath.Join(tmp, PolicyFileName)
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NetworkAllowlist = []string{"github.com"}
+	if err := Write(tmp, p); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only policy.yaml in .sbx, got %v", entries)
+	}
+}

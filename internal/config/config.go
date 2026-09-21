@@ -92,11 +92,39 @@ func Write(projectRoot string, p Policy) error {
 		return err
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := writeFileAtomic(path, data, 0644); err != nil {
 		return fmt.Errorf("write policy file: %w", err)
 	}
 
 	return nil
+}
+
+// writeFileAtomic writes data to a temp file next to path and renames it into
+// place, so an interrupted write never leaves a truncated policy file. An
+// existing file keeps its permissions; perm applies to a new one.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".policy-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once renamed
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // render encodes p, merging it into existing (the current file content, if
@@ -205,6 +233,7 @@ func setSequence(m *yaml.Node, key string, entries []string, keep bool) {
 	if i := mapValue(m, key); i >= 0 && m.Content[i].Kind == yaml.SequenceNode {
 		prev := m.Content[i]
 		seq.HeadComment, seq.LineComment, seq.FootComment = prev.HeadComment, prev.LineComment, prev.FootComment
+		seq.Style = prev.Style & yaml.FlowStyle // keep "[a, b]" written inline
 		for _, item := range prev.Content {
 			old[item.Value] = append(old[item.Value], item)
 		}
@@ -218,7 +247,7 @@ func setSequence(m *yaml.Node, key string, entries []string, keep bool) {
 		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e})
 	}
 	if len(seq.Content) == 0 {
-		seq.Style = yaml.FlowStyle
+		seq.Style |= yaml.FlowStyle
 	}
 	setEntry(m, key, seq)
 }

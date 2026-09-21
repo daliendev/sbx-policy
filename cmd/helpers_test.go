@@ -92,3 +92,22 @@ func TestIntersectEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSandbox(t *testing.T) {
+	tests := []struct {
+		name         string
+		flag, policy string
+		want         string
+	}{
+		{"flag wins over policy", "from-flag", "from-policy", "from-flag"},
+		{"policy when no flag", "", "from-policy", "from-policy"},
+		{"nothing set", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveSandbox(tt.flag, tt.policy); got != tt.want {
+				t.Errorf("resolveSandbox(%q, %q) = %q, want %q", tt.flag, tt.policy, got, tt.want)
+			}
+		})
+	}
+}

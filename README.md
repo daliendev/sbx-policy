@@ -106,6 +106,11 @@ The `allow`, `ports add`, and `sandbox set` commands update `.sbx/policy.yaml`
 and, in an interactive terminal, offer to run `sbx-policy sync` right away (in
 non-interactive environments they print a hint instead).
 
+When they rewrite `.sbx/policy.yaml`, comments, key order, unknown keys and inline
+lists (`[a, b]`) are kept as written, and the file is replaced atomically.
+
+`sync` and `sync down` accept `--yes` to apply without prompting (e.g. in CI).
+
 ## Example workflow
 
 ```bash
@@ -140,7 +145,7 @@ Network allowlist:
   • registry.npmjs.org
 
 Initialize and continue? [Y/n] y
-✓ Network allowlist synchronized to sandbox my-project-sandbox
+✓ Network allowlist and ports synchronized to sandbox my-project-sandbox
 
 # Now run your sandboxed tool as usual
 $ sbx run opencode .
@@ -207,6 +212,10 @@ sandbox gets (npm/PyPI/GitHub/etc.) are never written into a project's `.sbx/pol
 When you run `sbx-policy sync`, the tool compares the current `.sbx/policy.yaml` against the remembered state. If the allowlist changed, it shows a diff and asks for confirmation before touching `sbx`.
 
 The remembered state no longer holds the sandbox: the target always comes from `policy.yaml` or `--sandbox`.
+
+Without any remembered state (first sync on a machine), `sync` asks `Initialize and continue? [Y/n]`.
+If the plan would also remove rules or ports from `sbx`, the question becomes `[y/N]` and an empty
+answer aborts: removals are never approved by default.
 
 **Important:** This is a change-detection convenience, not a security boundary. An agent that can modify `.sbx/policy.yaml` can also modify your source code. The actual sandbox enforcement remains Docker Sandbox's responsibility.
 

@@ -134,27 +134,28 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// doSyncDown pulls the network allowlist and ports already configured for
-// the sandbox in sbx (the source of truth here) into .sbx/policy.yaml,
-// warning when that would change the file.
+// doSyncDown adopts the network allowlist and ports configured for the
+// sandbox in sbx into .sbx/policy.yaml, warning when that would change the
+// file. It is the explicit way to let sbx's state win over the file (e.g. to
+// adopt an existing sandbox); entries the file already has and sbx still
+// satisfies are left exactly as written.
 func doSyncDown(cmd *cobra.Command, args []string) error {
 	s, err := prepareSync()
 	if err != nil {
 		return err
 	}
 
-	client := sbx.NewClient()
-	remoteAllowlist, err := client.ListNetworkRules(s.sandbox)
-	if err != nil {
-		return exitf("Error: %v\n", err)
-	}
-	remotePorts, err := client.ListPorts(s.sandbox)
+	svc := reconcile.New(sbx.NewClient())
+	current, err := svc.Current(s.sandbox)
 	if err != nil {
 		return exitf("Error: %v\n", err)
 	}
 
-	pulledAllowlist := policy.Normalize(remoteAllowlist)
-	pulledPorts := policy.Normalize(remotePorts)
+	// Adopt keeps the entries sbx still satisfies as written, so a bare
+	// "3000" isn't rewritten to the host port sbx picked for it.
+	adopted := reconcile.Adopt(reconcile.Desired{Allowlist: s.ctx.policy.NetworkAllowlist, Ports: s.ctx.policy.Ports}, current)
+	pulledAllowlist := policy.Normalize(adopted.Allowlist)
+	pulledPorts := policy.Normalize(adopted.Ports)
 	allowlistDiff := policy.Compare(policy.Normalize(s.ctx.policy.NetworkAllowlist), pulledAllowlist)
 	portsDiff := policy.Compare(policy.Normalize(s.ctx.policy.Ports), pulledPorts)
 	changed := allowlistDiff.HasChanges() || portsDiff.HasChanges()
@@ -176,16 +177,18 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 			ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
 		}
 		ui.Separator()
-		if !ask("Overwrite .sbx/policy.yaml with the sandbox's current state? [y/N] ", false) {
+		if !ask("Update .sbx/policy.yaml with the sandbox's current state? [y/N] ", false) {
 			ui.Info("Aborted.")
 			return fmt.Errorf("aborted")
 		}
 	}
 
-	s.ctx.policy.NetworkAllowlist = pulledAllowlist
-	s.ctx.policy.Ports = pulledPorts
-	if err := config.Write(s.ctx.root, s.ctx.policy); err != nil {
-		return err
+	if changed {
+		s.ctx.policy.NetworkAllowlist = adopted.Allowlist
+		s.ctx.policy.Ports = adopted.Ports
+		if err := config.Write(s.ctx.root, s.ctx.policy); err != nil {
+			return err
+		}
 	}
 
 	// Always record the current state, even when nothing changed, so a

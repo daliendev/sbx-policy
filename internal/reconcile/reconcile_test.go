@@ -221,3 +221,78 @@ func TestServiceApplyNetworkFailureIsNotAPublishError(t *testing.T) {
 
 // The service must stay usable with the real client.
 var _ Backend = (*sbx.Client)(nil)
+
+func TestAdopt(t *testing.T) {
+	rules := func(hosts ...string) []sbx.NetworkRule {
+		var r []sbx.NetworkRule
+		for _, h := range hosts {
+			r = append(r, sbx.NetworkRule{ID: "id-" + h, Host: h})
+		}
+		return r
+	}
+	tests := []struct {
+		name  string
+		local Desired
+		cur   Current
+		want  Desired
+	}{
+		{
+			// The reported problem: sbx chose host port 49152 for "3000".
+			name:  "bare port stays as written while sbx satisfies it",
+			local: Desired{Ports: []string{"3000"}},
+			cur:   Current{Ports: []string{"49152:3000"}},
+			want:  Desired{Ports: []string{"3000"}},
+		},
+		{
+			name:  "adopts what the file doesn't track, sorted, after the file's entries",
+			local: Desired{Allowlist: []string{"github.com"}, Ports: []string{"8080:3000"}},
+			cur:   Current{Rules: rules("zeta.com", "github.com", "alpha.com"), Ports: []string{"7777:7000", "8080:3000"}},
+			want:  Desired{Allowlist: []string{"github.com", "alpha.com", "zeta.com"}, Ports: []string{"8080:3000", "7777:7000"}},
+		},
+		{
+			name:  "drops entries sbx no longer has",
+			local: Desired{Allowlist: []string{"a.com", "b.com"}, Ports: []string{"8080:3000", "9090:9000"}},
+			cur:   Current{Rules: rules("b.com"), Ports: []string{"9090:9000"}},
+			want:  Desired{Allowlist: []string{"b.com"}, Ports: []string{"9090:9000"}},
+		},
+		{
+			name:  "keeps the file's order",
+			local: Desired{Allowlist: []string{"z.com", "a.com"}},
+			cur:   Current{Rules: rules("a.com", "z.com")},
+			want:  Desired{Allowlist: []string{"z.com", "a.com"}},
+		},
+		{
+			name: "adopting into an empty file",
+			cur:  Current{Rules: rules("b.com", "a.com"), Ports: []string{"49152:3000"}},
+			want: Desired{Allowlist: []string{"a.com", "b.com"}, Ports: []string{"49152:3000"}},
+		},
+		{
+			// A bare port only covers the sandbox port it names.
+			name:  "bare port not satisfied is dropped and the real mapping adopted",
+			local: Desired{Ports: []string{"3000"}},
+			cur:   Current{Ports: []string{"49152:30001"}},
+			want:  Desired{Ports: []string{"49152:30001"}},
+		},
+		{
+			// Bundled rules (no ID) are still hosts sbx allows for the sandbox.
+			name: "bundled hosts are adopted",
+			cur:  Current{Rules: []sbx.NetworkRule{{Host: "a.com"}, {Host: "b.com"}}},
+			want: Desired{Allowlist: []string{"a.com", "b.com"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Adopt(tt.local, tt.cur)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+			if again := Adopt(got, tt.cur); !reflect.DeepEqual(again, got) {
+				t.Errorf("not idempotent: %+v then %+v", got, again)
+			}
+			// What Adopt returns must leave nothing to sync back up.
+			if plan := Diff(got, tt.cur.Rules, tt.cur.Ports); len(plan.AddHosts) != 0 || len(plan.Publish) != 0 {
+				t.Errorf("adopted state still needs publishing to sbx: %+v", plan)
+			}
+		})
+	}
+}

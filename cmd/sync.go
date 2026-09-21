@@ -9,6 +9,7 @@ import (
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
+	"github.com/daliendev/sbx-policy/internal/reconcile"
 	"github.com/daliendev/sbx-policy/internal/sbx"
 	"github.com/daliendev/sbx-policy/internal/state"
 	"github.com/daliendev/sbx-policy/internal/ui"
@@ -89,8 +90,8 @@ func prepareSync() (*syncSetup, error) {
 	return &syncSetup{ctx: ctx, mgr: mgr, key: key, stored: stored, found: found, sandbox: sandbox}, nil
 }
 
-// doSyncUp pushes .sbx/policy.yaml (the desired state) to sbx, warning when
-// it differs from the last state we know sbx approved.
+// doSyncUp pushes .sbx/policy.yaml (the desired state) to sbx. It plans
+// against sbx's actual state, shows what will change, and only then applies.
 func doSyncUp(cmd *cobra.Command, args []string) error {
 	s, err := prepareSync()
 	if err != nil {
@@ -100,7 +101,13 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 	desiredAllowlist := policy.Normalize(s.ctx.policy.NetworkAllowlist)
 	desiredPorts := policy.Normalize(s.ctx.policy.Ports)
 
-	ok, err := confirmSync(desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
+	svc := reconcile.New(sbx.NewClient())
+	plan, err := svc.Plan(s.sandbox, reconcile.Desired{Allowlist: desiredAllowlist, Ports: desiredPorts})
+	if err != nil {
+		return exitf("Error: %v\n", err)
+	}
+
+	ok, err := confirmSync(plan, desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
 	if err != nil {
 		return err
 	}
@@ -109,13 +116,8 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("aborted")
 	}
 
-	client := sbx.NewClient()
-	result, err := client.SyncNetworkPolicy(desiredAllowlist, s.sandbox)
-	if err != nil {
-		return exitf("Error: %v\n", err)
-	}
-	if err := client.SyncPorts(desiredPorts, s.sandbox); err != nil {
-		// %w keeps *sbx.PortPublishError reachable for 'ports add' rollback.
+	// %w keeps *reconcile.PublishError reachable for 'ports add' rollback.
+	if err := svc.Apply(s.sandbox, plan); err != nil {
 		return exitf("Error: %w\n", err)
 	}
 
@@ -123,9 +125,9 @@ func doSyncUp(cmd *cobra.Command, args []string) error {
 		ui.Warning("Could not save remembered state: %v", err)
 	}
 
-	if len(result.SkippedRemovals) > 0 {
+	if len(plan.SkippedRemovals) > 0 {
 		ui.Warning("Could not remove from sbx (bundled with other hosts on the same rule; remove manually if needed):")
-		ui.PrintList(result.SkippedRemovals, "•")
+		ui.PrintList(plan.SkippedRemovals, "•")
 	}
 
 	ui.Success("Network allowlist and ports synchronized to sandbox %s", s.sandbox)
@@ -236,56 +238,63 @@ func resolveSandbox(flag, policySandbox, storedSandbox string, found bool) strin
 	return ""
 }
 
-// confirmSync prompts the user when the allowlist or ports changed, or when
-// there is no previous state. It returns true if the sync should proceed.
-func confirmSync(desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
-	if yesFlag {
+// printPlan shows what applying plan will change in sbx.
+func printPlan(plan reconcile.Plan) {
+	if len(plan.AddHosts) > 0 || len(plan.RemoveRules) > 0 {
+		ui.Info("Network allowlist:")
+		ui.PrintDiff(plan.AddHosts, plan.RemovedHosts())
+	}
+	if len(plan.Publish) > 0 || len(plan.Unpublish) > 0 {
+		ui.Info("Ports:")
+		ui.PrintDiff(plan.Publish, plan.Unpublish)
+	}
+	if len(plan.SkippedRemovals) > 0 {
+		ui.Info("Left in sbx (bundled with other hosts on the same rule):")
+		ui.PrintList(plan.SkippedRemovals, "•")
+	}
+}
+
+// confirmSync shows plan (what will actually change in sbx) and asks before
+// applying it. Nothing is asked when there is nothing to do or --yes was
+// given. The header says why the sync isn't a no-op: first sync, the policy
+// file changed since the last approval, or sbx drifted from the policy file
+// (someone changed it outside sbx-policy, and those changes will be undone).
+// It returns true if the sync should proceed.
+func confirmSync(plan reconcile.Plan, desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
+	if plan.Empty() {
+		ui.Success("Sandbox %s already matches %s", sandbox, config.PolicyFileName)
 		return true, nil
 	}
 
-	allowlistDiff := policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist)
-	portsDiff := policy.Compare(policy.Normalize(storedPorts), desiredPorts)
-	noChanges := !allowlistDiff.HasChanges() && !portsDiff.HasChanges()
+	fileChanged := found &&
+		(policy.Compare(policy.Normalize(storedAllowlist), desiredAllowlist).HasChanges() ||
+			policy.Compare(policy.Normalize(storedPorts), desiredPorts).HasChanges())
 
-	if !found {
+	if !yesFlag {
 		if err := requireInteractive(); err != nil {
 			return false, err
 		}
+	}
+	switch {
+	case !found:
 		ui.Info("No previous network policy found for this project.")
-		ui.Separator()
-		ui.Info("Sandbox: %s", sandbox)
-		ui.Info("Network allowlist:")
-		ui.PrintList(desiredAllowlist, "•")
-		if len(desiredPorts) > 0 {
-			ui.Info("Ports:")
-			ui.PrintList(desiredPorts, "•")
-		}
-		ui.Separator()
-		return ask("Initialize and continue? [Y/n] ", true), nil
+	case fileChanged:
+		ui.Warning("Policy changed since last approval")
+	default:
+		ui.Warning("Sandbox %s differs from %s (changed outside sbx-policy); syncing will undo that", sandbox, config.PolicyFileName)
 	}
-
-	if noChanges {
-		ui.Success("Network allowlist and ports unchanged for sandbox %s", sandbox)
-		return true, nil
-	}
-
-	if err := requireInteractive(); err != nil {
-		return false, err
-	}
-
-	ui.Warning("Policy changed since last approval")
 	ui.Separator()
 	ui.Info("Sandbox: %s", sandbox)
+	printPlan(plan)
 	ui.Separator()
-	if allowlistDiff.HasChanges() {
-		ui.Info("Network allowlist:")
-		ui.PrintDiff(allowlistDiff.Added, allowlistDiff.Removed)
+
+	if yesFlag {
+		return true, nil
 	}
-	if portsDiff.HasChanges() {
-		ui.Info("Ports:")
-		ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
+	if !found {
+		return ask("Initialize and continue? [Y/n] ", true), nil
 	}
-	return ask("Continue with the updated policy? [y/N] ", false), nil
+	return ask("Continue with these changes? [y/N] ", false), nil
 }
 
 func ask(prompt string, defaultYes bool) bool {

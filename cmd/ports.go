@@ -6,7 +6,7 @@ import (
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
-	"github.com/daliendev/sbx-policy/internal/sbx"
+	"github.com/daliendev/sbx-policy/internal/reconcile"
 	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -58,7 +58,11 @@ bare sandbox port (e.g. 3000, letting the OS pick a free host port).`,
 		// Only roll back mappings this command added and sbx refused to
 		// publish: any other failure says nothing about the new entries, and
 		// the ones that were published (or never attempted) stay in the file.
-		rejected := intersectEntries(added, sbx.FailedPortMappings(err))
+		var rejected []string
+		var pubErr *reconcile.PublishError
+		if errors.As(err, &pubErr) {
+			rejected = intersectEntries(added, []string{pubErr.Mapping})
+		}
 		if len(rejected) == 0 {
 			return err
 		}

@@ -123,7 +123,8 @@ func intersectEntries(list []string, other []string) []string {
 
 // offerSync prompts the user to run 'sbx-policy sync' immediately when stdin
 // is interactive; otherwise it prints a hint to run sync manually.
-// The sync runs with auto-approval to avoid a second confirmation prompt.
+// The sync is approved without a second prompt unless it would remove
+// something from sbx (see approveAdditions).
 func offerSync() error {
 	if !isStdinCharDevice() {
 		ui.Info("Run 'sbx-policy sync' to apply the changes.")
@@ -133,7 +134,5 @@ func offerSync() error {
 		ui.Info("Run 'sbx-policy sync' to apply the changes.")
 		return nil
 	}
-	yesFlag = true
-	defer func() { yesFlag = false }()
-	return doSyncUp(nil, nil)
+	return runSyncUp(approveAdditions)
 }

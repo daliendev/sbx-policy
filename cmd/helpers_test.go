@@ -3,6 +3,9 @@ package cmd
 import (
 	"reflect"
 	"testing"
+
+	"github.com/daliendev/sbx-policy/internal/reconcile"
+	"github.com/daliendev/sbx-policy/internal/sbx"
 )
 
 func TestSplitCommaSeparated(t *testing.T) {
@@ -88,6 +91,39 @@ func TestIntersectEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := intersectEntries(tt.list, tt.other); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("intersectEntries(%v, %v) = %v, want %v", tt.list, tt.other, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApprovalNeedsPrompt(t *testing.T) {
+	add := reconcile.Plan{AddHosts: []string{"a.com"}, Publish: []string{"3000"}}
+	removeRule := reconcile.Plan{RemoveRules: []sbx.NetworkRule{{ID: "r1", Host: "old.com"}}}
+	unpublish := reconcile.Plan{Unpublish: []string{"7777:7000"}}
+	mixed := reconcile.Plan{AddHosts: []string{"a.com"}, Unpublish: []string{"7777:7000"}}
+	// Bundled hosts are reported but never removed, so they aren't a change.
+	skippedOnly := reconcile.Plan{SkippedRemovals: []string{"b.com"}}
+
+	tests := []struct {
+		name string
+		appr approval
+		plan reconcile.Plan
+		want bool
+	}{
+		{"empty plan never asks", askUser, reconcile.Plan{}, false},
+		{"askUser asks for additions", askUser, add, true},
+		{"askUser asks for removals", askUser, removeRule, true},
+		{"approveAll never asks", approveAll, mixed, false},
+		{"approveAdditions applies additions silently", approveAdditions, add, false},
+		{"approveAdditions asks when a rule is removed", approveAdditions, removeRule, true},
+		{"approveAdditions asks when a port is unpublished", approveAdditions, unpublish, true},
+		{"approveAdditions asks when additions come with removals", approveAdditions, mixed, true},
+		{"approveAdditions ignores skipped removals", approveAdditions, skippedOnly, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.appr.needsPrompt(tt.plan); got != tt.want {
+				t.Errorf("needsPrompt = %v, want %v", got, tt.want)
 			}
 		})
 	}

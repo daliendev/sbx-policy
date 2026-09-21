@@ -71,6 +71,9 @@ func prepareSync() (*syncSetup, error) {
 	}
 
 	sandbox := resolveSandbox(sandboxFlag, ctx.policy.Sandbox)
+	if err := policy.ValidateSandboxName(sandbox); err != nil {
+		return nil, exitf("Error: %v\n", err)
+	}
 	if sandbox == "" {
 		ui.Error("No sandbox specified for this project.")
 		ui.Separator()
@@ -95,40 +98,62 @@ type approval int
 const (
 	// askUser prompts before applying any non-empty plan.
 	askUser approval = iota
-	// approveAdditions applies a plan that only adds things to sbx without
-	// asking (the user just ran a command that asked for them), but still
-	// asks when it would also remove something: that removal can't come from
-	// the command they ran, so it is sbx drift or an unsynced hand edit.
+	// approveAdditions applies without asking the additions the user just
+	// requested with the command they ran (see runSyncUp's requested
+	// argument). Anything else still asks: a removal, or an addition the
+	// command did not ask for, can't come from that command, so it is sbx
+	// drift or a hand edit of the policy file (possibly pulled from someone
+	// else, or written by the agent running in the sandbox).
 	approveAdditions
 	// approveAll applies any plan without asking (--yes).
 	approveAll
 )
 
-// needsPrompt reports whether plan must be confirmed by the user.
-func (a approval) needsPrompt(plan reconcile.Plan) bool {
+// needsPrompt reports whether plan must be confirmed by the user. requested
+// is what the running command itself asked to add; it only matters for
+// approveAdditions.
+func (a approval) needsPrompt(plan reconcile.Plan, requested reconcile.Desired) bool {
 	switch {
 	case plan.Empty():
 		return false
 	case a == approveAll:
 		return false
 	case a == approveAdditions:
-		return len(plan.RemoveRules) > 0 || len(plan.Unpublish) > 0
+		return len(plan.RemoveRules) > 0 || len(plan.Unpublish) > 0 ||
+			!containsAll(requested.Allowlist, plan.AddHosts) ||
+			!containsAll(requested.Ports, plan.Publish)
 	default:
 		return true
 	}
 }
 
+// containsAll reports whether every entry of want is in have.
+func containsAll(have, want []string) bool {
+	set := make(map[string]struct{}, len(have))
+	for _, e := range have {
+		set[e] = struct{}{}
+	}
+	for _, e := range want {
+		if _, ok := set[e]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // doSyncUp is the 'sync' / 'sync up' entry point.
 func doSyncUp(cmd *cobra.Command, args []string) error {
 	if yesFlag {
-		return runSyncUp(approveAll)
+		return runSyncUp(approveAll, reconcile.Desired{})
 	}
-	return runSyncUp(askUser)
+	return runSyncUp(askUser, reconcile.Desired{})
 }
 
 // runSyncUp pushes .sbx/policy.yaml (the desired state) to sbx. It plans
 // against sbx's actual state, shows what will change, and only then applies.
-func runSyncUp(appr approval) error {
+// requested lists what the calling command just added to the policy file, so
+// approveAdditions can tell it apart from changes the user didn't ask for.
+func runSyncUp(appr approval, requested reconcile.Desired) error {
 	s, err := prepareSync()
 	if err != nil {
 		return err
@@ -143,7 +168,7 @@ func runSyncUp(appr approval) error {
 		return exitf("Error: %v\n", err)
 	}
 
-	ok, err := confirmSync(plan, appr, desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
+	ok, err := confirmSync(plan, appr, requested, desiredAllowlist, desiredPorts, s.sandbox, s.stored.Allowlist, s.stored.Ports, s.found)
 	if err != nil {
 		return err
 	}
@@ -294,13 +319,13 @@ func printPlan(plan reconcile.Plan) {
 // no-op: first sync, the policy file changed since the last approval, or sbx
 // drifted from the policy file (someone changed it outside sbx-policy, and
 // those changes will be undone). It returns true if the sync should proceed.
-func confirmSync(plan reconcile.Plan, appr approval, desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
+func confirmSync(plan reconcile.Plan, appr approval, requested reconcile.Desired, desiredAllowlist, desiredPorts []string, sandbox string, storedAllowlist, storedPorts []string, found bool) (bool, error) {
 	if plan.Empty() {
 		ui.Success("Sandbox %s already matches %s", sandbox, config.PolicyFileName)
 		return true, nil
 	}
 
-	prompt := appr.needsPrompt(plan)
+	prompt := appr.needsPrompt(plan, requested)
 	if prompt {
 		if err := requireInteractive(); err != nil {
 			return false, err

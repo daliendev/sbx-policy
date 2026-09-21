@@ -5,6 +5,7 @@ import (
 
 	"github.com/daliendev/sbx-policy/internal/config"
 	"github.com/daliendev/sbx-policy/internal/policy"
+	"github.com/daliendev/sbx-policy/internal/reconcile"
 	"github.com/daliendev/sbx-policy/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -51,7 +52,7 @@ argument, or a mix of both:
 		}
 		ui.Success("Added host(s):")
 		ui.PrintList(added, "•")
-		return offerSync()
+		return offerSync(reconcile.Desired{Allowlist: added})
 	},
 }
 

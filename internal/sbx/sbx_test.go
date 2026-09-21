@@ -418,3 +418,35 @@ func TestPublishPortRequiresSandbox(t *testing.T) {
 		t.Fatal("expected error when sandbox is empty")
 	}
 }
+
+// A sandbox, host or mapping starting with "-" would be parsed by sbx as a
+// flag; the client must refuse before anything is executed.
+func TestClientRefusesFlagLikeArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(c *Client) error
+	}{
+		{"list rules, sandbox", func(c *Client) error { _, err := c.ListScopedNetworkRules("--global"); return err }},
+		{"add rules, sandbox", func(c *Client) error { return c.AddNetworkRules([]string{"a.com"}, "--global") }},
+		{"add rules, host", func(c *Client) error { return c.AddNetworkRules([]string{"--sandbox=other"}, "sb") }},
+		{"add rules, later host", func(c *Client) error { return c.AddNetworkRules([]string{"a.com", "-h"}, "sb") }},
+		{"remove rule, sandbox", func(c *Client) error { return c.RemoveNetworkRuleByID("id", "--global") }},
+		{"list ports, sandbox", func(c *Client) error { _, err := c.ListPorts("--json"); return err }},
+		{"publish, sandbox", func(c *Client) error { return c.PublishPort("8080:3000", "--json") }},
+		{"publish, mapping", func(c *Client) error { return c.PublishPort("--help", "sb") }},
+		{"unpublish, sandbox", func(c *Client) error { return c.UnpublishPort("8080:3000", "--json") }},
+		{"unpublish, mapping", func(c *Client) error { return c.UnpublishPort("--help", "sb") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &scriptedRunner{}
+			err := tt.call(&Client{Runner: mock})
+			if err == nil || !strings.Contains(err.Error(), "starts with '-'") {
+				t.Fatalf("err = %v, want a leading-dash error", err)
+			}
+			if len(mock.calls) != 0 {
+				t.Fatalf("sbx was executed: %v", mock.calls)
+			}
+		})
+	}
+}

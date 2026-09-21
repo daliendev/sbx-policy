@@ -50,7 +50,7 @@ bare sandbox port (e.g. 3000, letting the OS pick a free host port).`,
 		ui.Success("Added port mapping(s):")
 		ui.PrintList(added, "•")
 
-		err = offerSync()
+		err = offerSync(reconcile.Desired{Ports: added})
 		if err == nil {
 			return nil
 		}

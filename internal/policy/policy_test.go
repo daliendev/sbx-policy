@@ -140,3 +140,54 @@ func TestValidatePortMappingOutOfRange(t *testing.T) {
 		t.Fatalf("expected out of range error for ports, got: %v", err)
 	}
 }
+
+func TestValidateRejectsControlCharacters(t *testing.T) {
+	for _, entry := range []string{
+		"evil.com\x1b[2A\x1b[2Kgithub.com", // terminal escape sequence
+		"evil.com\x07",                     // bell
+		"evil.com\x7f",                     // DEL
+		"evil.com\u009b2K",                 // C1 CSI
+		"github.com‮gpj.exe",               // bidi override
+	} {
+		if err := ValidateNetworkEntry(entry); err == nil || !strings.Contains(err.Error(), "control character") {
+			t.Errorf("ValidateNetworkEntry(%q) = %v, want control character error", entry, err)
+		}
+		if err := ValidateSandboxName(entry); err == nil || !strings.Contains(err.Error(), "control character") {
+			t.Errorf("ValidateSandboxName(%q) = %v, want control character error", entry, err)
+		}
+	}
+	if err := ValidatePortMapping("80\x1b[2K:80"); err == nil {
+		t.Error("ValidatePortMapping accepted an escape sequence")
+	}
+}
+
+func TestValidateRejectsLeadingDash(t *testing.T) {
+	for _, entry := range []string{"-h", "--sandbox=other", "--global"} {
+		if err := ValidateNetworkEntry(entry); err == nil || !strings.Contains(err.Error(), "starts with '-'") {
+			t.Errorf("ValidateNetworkEntry(%q) = %v, want leading dash error", entry, err)
+		}
+		if err := ValidateSandboxName(entry); err == nil || !strings.Contains(err.Error(), "starts with '-'") {
+			t.Errorf("ValidateSandboxName(%q) = %v, want leading dash error", entry, err)
+		}
+	}
+	// A dash elsewhere is fine (hyphenated hosts and sandbox names).
+	for _, ok := range []string{"my-host.example.com", "a-b"} {
+		if err := ValidateNetworkEntry(ok); err != nil {
+			t.Errorf("ValidateNetworkEntry(%q) = %v", ok, err)
+		}
+		if err := ValidateSandboxName(ok); err != nil {
+			t.Errorf("ValidateSandboxName(%q) = %v", ok, err)
+		}
+	}
+}
+
+func TestValidatePolicyRejectsHostileFile(t *testing.T) {
+	p := config.Policy{Version: 1, Sandbox: "--global", NetworkAllowlist: []string{}}
+	if err := Validate(p); err == nil {
+		t.Error("Validate accepted a sandbox named --global")
+	}
+	p = config.Policy{Version: 1, NetworkAllowlist: []string{"ok.com", "--sandbox=other"}}
+	if err := Validate(p); err == nil {
+		t.Error("Validate accepted a flag-like network entry")
+	}
+}

@@ -104,6 +104,12 @@ func TestApprovalNeedsPrompt(t *testing.T) {
 	// Bundled hosts are reported but never removed, so they aren't a change.
 	skippedOnly := reconcile.Plan{SkippedRemovals: []string{"b.com"}}
 
+	// What the running command asked for: a.com and port 3000.
+	requested := reconcile.Desired{Allowlist: []string{"a.com"}, Ports: []string{"3000"}}
+	// An entry the command did not ask for, e.g. from a pulled policy file.
+	foreignHost := reconcile.Plan{AddHosts: []string{"a.com", "**"}}
+	foreignPort := reconcile.Plan{Publish: []string{"3000", "22"}}
+
 	tests := []struct {
 		name string
 		appr approval
@@ -114,7 +120,9 @@ func TestApprovalNeedsPrompt(t *testing.T) {
 		{"askUser asks for additions", askUser, add, true},
 		{"askUser asks for removals", askUser, removeRule, true},
 		{"approveAll never asks", approveAll, mixed, false},
-		{"approveAdditions applies additions silently", approveAdditions, add, false},
+		{"approveAdditions applies requested additions silently", approveAdditions, add, false},
+		{"approveAdditions asks for a host the command did not add", approveAdditions, foreignHost, true},
+		{"approveAdditions asks for a port the command did not add", approveAdditions, foreignPort, true},
 		{"approveAdditions asks when a rule is removed", approveAdditions, removeRule, true},
 		{"approveAdditions asks when a port is unpublished", approveAdditions, unpublish, true},
 		{"approveAdditions asks when additions come with removals", approveAdditions, mixed, true},
@@ -122,7 +130,7 @@ func TestApprovalNeedsPrompt(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.appr.needsPrompt(tt.plan); got != tt.want {
+			if got := tt.appr.needsPrompt(tt.plan, requested); got != tt.want {
 				t.Errorf("needsPrompt = %v, want %v", got, tt.want)
 			}
 		})

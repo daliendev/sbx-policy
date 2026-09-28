@@ -14,12 +14,20 @@ import (
 var portsCmd = &cobra.Command{
 	Use:   "ports",
 	Short: "Manage port mappings in .sbx/policy.yaml",
+	Long: `Manage port mappings in .sbx/policy.yaml, the only source of ports:
+'sync down' never pulls ports from sbx.
+
+'sync up' publishes the mappings declared here, and only ever unpublishes
+ports it published itself; ports sbx or a kit published on their own are
+left alone.`,
 }
 
 var portsAddCmd = &cobra.Command{
 	Use:   "add <mapping> [mapping...]",
 	Short: "Add port mappings to the policy file",
-	Long: `Each mapping is either hostPort:sandboxPort (e.g. 8080:3000) or a
+	Long: `Add port mappings to .sbx/policy.yaml, then offer to run 'sbx-policy sync'.
+
+Each mapping is either hostPort:sandboxPort (e.g. 8080:3000) or a
 bare sandbox port (e.g. 3000, letting the OS pick a free host port).`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

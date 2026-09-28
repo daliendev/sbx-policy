@@ -13,8 +13,8 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	Long: `sbx-policy provides a declarative, project-scoped network allowlist
-that synchronizes with Docker Sandbox (sbx). It warns you when the policy
-has changed since you last approved it.`,
+and port mappings that synchronize with Docker Sandbox (sbx). It warns you
+when the policy has changed since you last approved it.`,
 }
 
 func Execute() {

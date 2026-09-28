@@ -100,7 +100,7 @@ Rules:
 | `sbx-policy ports add <mapping>...` | Add port mappings to the policy. |
 | `sbx-policy sandbox set <name>` | Set the target sandbox name in the policy. |
 | `sbx-policy sync` / `sync up` | Compare `.sbx/policy.yaml` with what `sbx` actually has for the sandbox, show what will be added/removed, prompt, then apply it. |
-| `sbx-policy sync down` | Pull the network allowlist and ports already configured in `sbx` for a sandbox into `.sbx/policy.yaml`, prompting if it would change the file. |
+| `sbx-policy sync down` | Pull the network allowlist already configured in `sbx` for a sandbox into `.sbx/policy.yaml`, prompting if it would change the file. Ports are never pulled. |
 
 The `allow`, `ports add`, and `sandbox set` commands update `.sbx/policy.yaml`
 and, in an interactive terminal, offer to run `sbx-policy sync` right away (in
@@ -183,11 +183,12 @@ sbx-run opencode .
 ## Pulling in the other direction
 
 `sbx-policy sync` (== `sync up`) is a one-way push: it makes `sbx` match `.sbx/policy.yaml`.
-The confirmation lists what will change in `sbx` itself, so rules or ports added directly
-through `sbx` show up as removals (and are undone) instead of going unnoticed.
+The confirmation lists what will change in `sbx` itself, so network rules added directly
+through `sbx` show up as removals (and are undone) instead of going unnoticed. Ports work
+differently, see [Ports sbx-policy didn't publish](#ports-sbx-policy-didnt-publish).
 If a sandbox's network policy was changed directly through `sbx` (or you're adopting
 `sbx-policy` for a sandbox that already has rules), use `sync down` to go the other way —
-it makes `.sbx/policy.yaml` match what `sbx` currently has for that sandbox:
+it makes the network allowlist in `.sbx/policy.yaml` match what `sbx` currently has for that sandbox:
 
 ```bash
 $ sbx-policy sync down --sandbox my-project-sandbox
@@ -201,17 +202,35 @@ Update .sbx/policy.yaml with the sandbox's current state? [y/N] y
 ✓ .sbx/policy.yaml updated from sandbox my-project-sandbox
 ```
 
-Entries the file already has and `sbx` still satisfies are left exactly as written — for
-instance a bare `"3000"` stays `"3000"` even though `sbx` reports the host port it picked
-(`49152:3000`). Only real differences are added or removed, and the file is not touched at all
-when there are none.
+Hosts the file already has and `sbx` still allows are left exactly as written. Only real
+differences are added or removed, and the file is not touched at all when there are none.
+
+`sync down` leaves `ports` alone: `policy.yaml` is their only source (declare them with
+`sbx-policy ports add` or by hand). What `sbx` reports can't be adopted safely, since sbx also
+publishes ports of its own on random host ports (see below).
 
 Only rules scoped specifically to that sandbox are pulled in — the host-wide defaults every
 sandbox gets (npm/PyPI/GitHub/etc.) are never written into a project's `.sbx/policy.yaml`.
 
+## Ports sbx-policy didn't publish
+
+`sbx` publishes some ports on its own: a kit can declare ports in its `publishedPorts`, and sbx
+then publishes them on a **new random host port every time the sandbox starts** — for example
+git (`9418`) showing up as `49167:9418`, then `53001:9418` after a restart. Such a mapping can't
+be pinned in `policy.yaml`, and removing it would break whatever the kit set it up for.
+
+So `sbx-policy` only manages the ports it published itself (the ones recorded in its remembered
+state at the last `sync up`, see below):
+
+- `sync up` never unpublishes a port it didn't publish; it just lists it as left alone.
+- `sync down` never touches ports at all (see above).
+
+To manage one of those ports anyway, add it explicitly with `sbx-policy ports add`. The flip side:
+a port published by hand with `sbx ports --publish` is left alone too, rather than being undone.
+
 ## How remembered state works
 
-`sbx-policy` stores the last known/approved allowlist and ports in a local user-level directory (e.g. `~/.config/sbx-policy/`). This state is **not** committed to Git.
+`sbx-policy` stores the last known/approved allowlist and ports in a local user-level directory (e.g. `~/.config/sbx-policy/`). This state is **not** committed to Git. The ports it records are also the ones `sbx-policy` considers its own (see above).
 
 When you run `sbx-policy sync`, the tool compares the current `.sbx/policy.yaml` against the remembered state. If the allowlist changed, it shows a diff and asks for confirmation before touching `sbx`.
 

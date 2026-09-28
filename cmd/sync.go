@@ -19,9 +19,20 @@ import (
 var sandboxFlag string
 var yesFlag bool
 
+// syncUpLong is shared by 'sync' and its 'sync up' alias.
+const syncUpLong = `Make the sandbox match .sbx/policy.yaml: add and remove network rules
+scoped to the sandbox, and publish the ports the file declares. What will
+change is shown first and confirmed (removals default to no).
+
+Ports: only ports sbx-policy published itself at a previous sync are ever
+unpublished. Any other port (e.g. one a kit makes sbx publish on a random
+host port at every start, like git on 9418, or one published by hand with
+'sbx ports --publish') is left alone and listed as such.`
+
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Synchronize network allowlist with Docker Sandbox (alias for 'sync up')",
+	Short: "Synchronize network allowlist and ports with Docker Sandbox (alias for 'sync up')",
+	Long:  syncUpLong,
 	Args:  cobra.NoArgs,
 	RunE:  doSyncUp,
 }
@@ -29,15 +40,26 @@ var syncCmd = &cobra.Command{
 var syncUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Push .sbx/policy.yaml's network allowlist and ports to sbx",
+	Long:  syncUpLong,
 	Args:  cobra.NoArgs,
 	RunE:  doSyncUp,
 }
 
 var syncDownCmd = &cobra.Command{
 	Use:   "down",
-	Short: "Pull the network allowlist and ports already configured in sbx into .sbx/policy.yaml",
-	Args:  cobra.NoArgs,
-	RunE:  doSyncDown,
+	Short: "Pull the network allowlist already configured in sbx into .sbx/policy.yaml",
+	Long: `Make the network allowlist in .sbx/policy.yaml match the rules sbx has
+scoped to the sandbox (e.g. rules added directly through sbx, or adopting a
+sandbox that already has some). Hosts the file already has and sbx still
+allows are kept as written. The change is shown and confirmed first.
+
+Ports are never pulled: .sbx/policy.yaml is their only source. sbx also
+publishes ports of its own on random host ports, which can't be pinned in
+the file. Declare ports with 'sbx-policy ports add' or by editing the file.
+
+Host-wide default rules (npm, PyPI, GitHub, ...) are never pulled in.`,
+	Args: cobra.NoArgs,
+	RunE: doSyncDown,
 }
 
 // syncSetup is the state shared by 'sync up' and 'sync down': the loaded
@@ -163,7 +185,10 @@ func runSyncUp(appr approval, requested reconcile.Desired) error {
 	desiredPorts := policy.Normalize(s.ctx.policy.Ports)
 
 	svc := reconcile.New(sbx.NewClient())
-	plan, err := svc.Plan(s.sandbox, reconcile.Desired{Allowlist: desiredAllowlist, Ports: desiredPorts})
+	// Owned: only ports a previous sync put in sbx may be unpublished. The
+	// rest were published by sbx or a kit and are none of the policy's
+	// business.
+	plan, err := svc.Plan(s.sandbox, reconcile.Desired{Allowlist: desiredAllowlist, Ports: desiredPorts, Owned: s.stored.Ports})
 	if err != nil {
 		return exitf("Error: %v\n", err)
 	}
@@ -195,11 +220,12 @@ func runSyncUp(appr approval, requested reconcile.Desired) error {
 	return nil
 }
 
-// doSyncDown adopts the network allowlist and ports configured for the
-// sandbox in sbx into .sbx/policy.yaml, warning when that would change the
-// file. It is the explicit way to let sbx's state win over the file (e.g. to
-// adopt an existing sandbox); entries the file already has and sbx still
-// satisfies are left exactly as written.
+// doSyncDown adopts the network allowlist configured for the sandbox in sbx
+// into .sbx/policy.yaml, warning when that would change the file. It is the
+// explicit way to let sbx's state win over the file (e.g. to adopt an
+// existing sandbox); hosts the file already has and sbx still allows are
+// left exactly as written. Ports are not pulled: the policy file is their
+// only source (see reconcile.Adopt).
 func doSyncDown(cmd *cobra.Command, args []string) error {
 	s, err := prepareSync()
 	if err != nil {
@@ -212,14 +238,10 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 		return exitf("Error: %v\n", err)
 	}
 
-	// Adopt keeps the entries sbx still satisfies as written, so a bare
-	// "3000" isn't rewritten to the host port sbx picked for it.
-	adopted := reconcile.Adopt(reconcile.Desired{Allowlist: s.ctx.policy.NetworkAllowlist, Ports: s.ctx.policy.Ports}, current)
+	adopted := reconcile.Adopt(reconcile.Desired{Allowlist: s.ctx.policy.NetworkAllowlist}, current)
 	pulledAllowlist := policy.Normalize(adopted.Allowlist)
-	pulledPorts := policy.Normalize(adopted.Ports)
 	allowlistDiff := policy.Compare(policy.Normalize(s.ctx.policy.NetworkAllowlist), pulledAllowlist)
-	portsDiff := policy.Compare(policy.Normalize(s.ctx.policy.Ports), pulledPorts)
-	changed := allowlistDiff.HasChanges() || portsDiff.HasChanges()
+	changed := allowlistDiff.HasChanges()
 
 	if !changed {
 		ui.Success(".sbx/policy.yaml already matches sandbox %s", s.sandbox)
@@ -229,14 +251,8 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 		}
 		ui.Warning("Sandbox %s differs from .sbx/policy.yaml", s.sandbox)
 		ui.Separator()
-		if allowlistDiff.HasChanges() {
-			ui.Info("Network allowlist:")
-			ui.PrintDiff(allowlistDiff.Added, allowlistDiff.Removed)
-		}
-		if portsDiff.HasChanges() {
-			ui.Info("Ports:")
-			ui.PrintDiff(portsDiff.Added, portsDiff.Removed)
-		}
+		ui.Info("Network allowlist:")
+		ui.PrintDiff(allowlistDiff.Added, allowlistDiff.Removed)
 		ui.Separator()
 		if !ask("Update .sbx/policy.yaml with the sandbox's current state? [y/N] ", false) {
 			ui.Info("Aborted.")
@@ -246,7 +262,6 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 
 	if changed {
 		s.ctx.policy.NetworkAllowlist = adopted.Allowlist
-		s.ctx.policy.Ports = adopted.Ports
 		if err := config.Write(s.ctx.root, s.ctx.policy); err != nil {
 			return err
 		}
@@ -255,7 +270,9 @@ func doSyncDown(cmd *cobra.Command, args []string) error {
 	// Always record the current state, even when nothing changed, so a
 	// project pulled once (and never adopted a mismatched local edit)
 	// doesn't keep re-triggering "no previous state" prompts on 'sync up'.
-	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: pulledAllowlist, Ports: pulledPorts}); err != nil {
+	// The remembered ports are kept: they record what sbx-policy published,
+	// which only 'sync up' changes.
+	if err := s.mgr.Save(s.key, state.ProjectState{Allowlist: pulledAllowlist, Ports: s.stored.Ports}); err != nil {
 		ui.Warning("Could not save remembered state: %v", err)
 	}
 
@@ -312,6 +329,17 @@ func printPlan(plan reconcile.Plan) {
 		ui.Info("Left in sbx (bundled with other hosts on the same rule):")
 		ui.PrintList(plan.SkippedRemovals, "•")
 	}
+	printForeignPorts(plan.ForeignPorts)
+}
+
+// printForeignPorts lists port mappings sbx-policy leaves alone because it
+// didn't publish them.
+func printForeignPorts(ports []string) {
+	if len(ports) == 0 {
+		return
+	}
+	ui.Info("Ports left alone (not published by sbx-policy; use 'sbx-policy ports add' to manage one):")
+	ui.PrintList(ports, "•")
 }
 
 // confirmSync shows plan (what will actually change in sbx) and asks before

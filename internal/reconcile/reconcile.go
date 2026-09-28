@@ -27,6 +27,12 @@ type Backend interface {
 type Desired struct {
 	Allowlist []string
 	Ports     []string
+	// Owned are the port entries sbx-policy itself put in sbx (the ports
+	// recorded at the last sync). A current mapping that matches neither
+	// Ports nor Owned was published by someone else — typically sbx itself
+	// for a kit (e.g. git on 9418, on a new random host port at every
+	// sandbox start) — and is left alone: never unpublished, never adopted.
+	Owned []string
 }
 
 // Plan lists what it takes to move a sandbox from its current state to a
@@ -44,6 +50,9 @@ type Plan struct {
 	Unpublish []string
 	// Publish are desired port mappings with no match among the current ones.
 	Publish []string
+	// ForeignPorts are current mappings sbx-policy did not publish and the
+	// policy does not ask for; they are left in sbx (and reported).
+	ForeignPorts []string
 }
 
 // Empty reports whether the plan changes nothing.
@@ -78,13 +87,18 @@ type Current struct {
 	Ports []string
 }
 
-// Adopt returns local with sbx's current state folded in, for pulling sbx
-// changes into the policy file without rewriting what already matches:
-//   - an entry of local that sbx still satisfies is kept as written, in its
-//     original position (a bare "3000" stays "3000" while sbx has some
-//     "49152:3000", instead of being pinned to the host port sbx chose);
-//   - an entry of local that sbx no longer satisfies is dropped;
-//   - what sbx has that no entry of local covers is appended, sorted.
+// Adopt returns local with sbx's current network rules folded in, for
+// pulling sbx changes into the policy file without rewriting what already
+// matches:
+//   - a host of local that sbx still allows is kept as written, in its
+//     original position;
+//   - a host of local that sbx no longer allows is dropped;
+//   - what sbx allows that local doesn't list is appended, sorted.
+//
+// Ports are returned as local has them: the policy file is their only source.
+// sbx publishes some ports itself (a kit's publishedPorts, e.g. git on 9418)
+// on a new random host port at every start, so what sbx reports can't be
+// told apart from what was asked for, nor pinned in the file.
 //
 // It is pure and idempotent: Adopt(Adopt(l, c), c) equals Adopt(l, c).
 func Adopt(local Desired, cur Current) Desired {
@@ -93,7 +107,7 @@ func Adopt(local Desired, cur Current) Desired {
 		hosts = append(hosts, r.Host)
 	}
 
-	var out Desired
+	out := Desired{Ports: local.Ports, Owned: local.Owned}
 	inSbx := make(map[string]struct{}, len(hosts))
 	for _, h := range hosts {
 		inSbx[h] = struct{}{}
@@ -112,22 +126,6 @@ func Adopt(local Desired, cur Current) Desired {
 		}
 	}
 	out.Allowlist = append(out.Allowlist, sortedUnique(untracked)...)
-
-	var untrackedPorts []string
-	for _, d := range local.Ports {
-		for _, c := range cur.Ports {
-			if portMatchesDesired(c, d) {
-				out.Ports = append(out.Ports, d)
-				break
-			}
-		}
-	}
-	for _, c := range cur.Ports {
-		if !matchesAny(c, local.Ports) {
-			untrackedPorts = append(untrackedPorts, c)
-		}
-	}
-	out.Ports = append(out.Ports, sortedUnique(untrackedPorts)...)
 	return out
 }
 
@@ -149,6 +147,9 @@ func sortedUnique(in []string) []string {
 //
 // Bare desired ports like "3000" are satisfied by any current mapping whose
 // sandbox port is 3000 (e.g. "49152:3000"), reflecting Docker-style behaviour.
+//
+// Only mappings sbx-policy owns (desired.Owned) are unpublished; the other
+// extra mappings are foreign and only reported in ForeignPorts.
 func Diff(desired Desired, currentRules []sbx.NetworkRule, currentPorts []string) Plan {
 	var plan Plan
 
@@ -181,8 +182,12 @@ func Diff(desired Desired, currentRules []sbx.NetworkRule, currentPorts []string
 
 	// Ports.
 	for _, cur := range currentPorts {
-		if !matchesAny(cur, desired.Ports) {
+		switch {
+		case matchesAny(cur, desired.Ports):
+		case matchesAny(cur, desired.Owned):
 			plan.Unpublish = append(plan.Unpublish, cur)
+		default:
+			plan.ForeignPorts = append(plan.ForeignPorts, cur)
 		}
 	}
 	for _, d := range desired.Ports {

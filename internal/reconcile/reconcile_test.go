@@ -65,12 +65,13 @@ func TestDiffPorts(t *testing.T) {
 	tests := []struct {
 		name    string
 		desired []string
+		owned   []string
 		current []string
 		want    Plan
 	}{
-		{"publishes missing", []string{"8080:3000"}, nil, Plan{Publish: []string{"8080:3000"}}},
-		{"unpublishes extra", nil, []string{"9090:9000"}, Plan{Unpublish: []string{"9090:9000"}}},
-		{"exact match is left alone", []string{"8080:3000"}, []string{"8080:3000"}, Plan{}},
+		{"publishes missing", []string{"8080:3000"}, nil, nil, Plan{Publish: []string{"8080:3000"}}},
+		{"unpublishes extra it owns", nil, []string{"9090:9000"}, []string{"9090:9000"}, Plan{Unpublish: []string{"9090:9000"}}},
+		{"exact match is left alone", []string{"8080:3000"}, nil, []string{"8080:3000"}, Plan{}},
 		{
 			// "3000" lets the OS pick the host port; once sbx has chosen 49152
 			// the bare entry must not be re-published or the mapping removed.
@@ -79,12 +80,36 @@ func TestDiffPorts(t *testing.T) {
 			current: []string{"49152:3000"},
 			want:    Plan{},
 		},
-		{"bare port does not match another sandbox port", []string{"3000"}, []string{"49152:30001"}, Plan{Publish: []string{"3000"}, Unpublish: []string{"49152:30001"}}},
-		{"replaces a mapping", []string{"18080:3000"}, []string{"8080:3000"}, Plan{Publish: []string{"18080:3000"}, Unpublish: []string{"8080:3000"}}},
+		{"bare port does not match another sandbox port", []string{"3000"}, []string{"30001"}, []string{"49152:30001"}, Plan{Publish: []string{"3000"}, Unpublish: []string{"49152:30001"}}},
+		{"replaces a mapping", []string{"18080:3000"}, []string{"8080:3000"}, []string{"8080:3000"}, Plan{Publish: []string{"18080:3000"}, Unpublish: []string{"8080:3000"}}},
+		{
+			// A bare owned entry covers whatever host port sbx picked for it.
+			name:    "owned bare port unpublishes its mapping",
+			owned:   []string{"3000"},
+			current: []string{"49152:3000"},
+			want:    Plan{Unpublish: []string{"49152:3000"}},
+		},
+		{
+			// sbx publishes git (9418) for a kit on a new random host port at
+			// every start: whatever the host port, it's not ours to remove.
+			name:    "foreign ports are left alone and reported",
+			desired: []string{"8080:3000"},
+			owned:   []string{"8080:3000", "9090:9000"},
+			current: []string{"8080:3000", "9090:9000", "49167:9418"},
+			want:    Plan{Unpublish: []string{"9090:9000"}, ForeignPorts: []string{"49167:9418"}},
+		},
+		{
+			// A pinned mapping recorded before a restart doesn't make the
+			// new random host port ours.
+			name:    "owning a stale host port does not own the new one",
+			owned:   []string{"49167:9418"},
+			current: []string{"53001:9418"},
+			want:    Plan{ForeignPorts: []string{"53001:9418"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Diff(Desired{Ports: tt.desired}, nil, tt.current)
+			got := Diff(Desired{Ports: tt.desired, Owned: tt.owned}, nil, tt.current)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
@@ -129,7 +154,7 @@ func TestServicePlanReadsCurrentState(t *testing.T) {
 		rules: []sbx.NetworkRule{{ID: "r1", Host: "old.com"}},
 		ports: []string{"8080:3000"},
 	}
-	plan, err := New(b).Plan("box", Desired{Allowlist: []string{"new.com"}, Ports: []string{"9090:9000"}})
+	plan, err := New(b).Plan("box", Desired{Allowlist: []string{"new.com"}, Ports: []string{"9090:9000"}, Owned: []string{"8080:3000"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,23 +262,16 @@ func TestAdopt(t *testing.T) {
 		want  Desired
 	}{
 		{
-			// The reported problem: sbx chose host port 49152 for "3000".
-			name:  "bare port stays as written while sbx satisfies it",
-			local: Desired{Ports: []string{"3000"}},
-			cur:   Current{Ports: []string{"49152:3000"}},
-			want:  Desired{Ports: []string{"3000"}},
-		},
-		{
 			name:  "adopts what the file doesn't track, sorted, after the file's entries",
-			local: Desired{Allowlist: []string{"github.com"}, Ports: []string{"8080:3000"}},
-			cur:   Current{Rules: rules("zeta.com", "github.com", "alpha.com"), Ports: []string{"7777:7000", "8080:3000"}},
-			want:  Desired{Allowlist: []string{"github.com", "alpha.com", "zeta.com"}, Ports: []string{"8080:3000", "7777:7000"}},
+			local: Desired{Allowlist: []string{"github.com"}},
+			cur:   Current{Rules: rules("zeta.com", "github.com", "alpha.com")},
+			want:  Desired{Allowlist: []string{"github.com", "alpha.com", "zeta.com"}},
 		},
 		{
-			name:  "drops entries sbx no longer has",
-			local: Desired{Allowlist: []string{"a.com", "b.com"}, Ports: []string{"8080:3000", "9090:9000"}},
-			cur:   Current{Rules: rules("b.com"), Ports: []string{"9090:9000"}},
-			want:  Desired{Allowlist: []string{"b.com"}, Ports: []string{"9090:9000"}},
+			name:  "drops hosts sbx no longer has",
+			local: Desired{Allowlist: []string{"a.com", "b.com"}},
+			cur:   Current{Rules: rules("b.com")},
+			want:  Desired{Allowlist: []string{"b.com"}},
 		},
 		{
 			name:  "keeps the file's order",
@@ -263,15 +281,18 @@ func TestAdopt(t *testing.T) {
 		},
 		{
 			name: "adopting into an empty file",
-			cur:  Current{Rules: rules("b.com", "a.com"), Ports: []string{"49152:3000"}},
-			want: Desired{Allowlist: []string{"a.com", "b.com"}, Ports: []string{"49152:3000"}},
+			cur:  Current{Rules: rules("b.com", "a.com")},
+			want: Desired{Allowlist: []string{"a.com", "b.com"}},
 		},
 		{
-			// A bare port only covers the sandbox port it names.
-			name:  "bare port not satisfied is dropped and the real mapping adopted",
-			local: Desired{Ports: []string{"3000"}},
-			cur:   Current{Ports: []string{"49152:30001"}},
-			want:  Desired{Ports: []string{"49152:30001"}},
+			// The reported problem: git (9418) published by sbx on a random
+			// host port kept being pinned into the file by 'sync down'. Ports
+			// are never pulled: the file's are returned untouched, even those
+			// sbx doesn't have (yet).
+			name:  "ports are left as the file has them",
+			local: Desired{Ports: []string{"3000", "8080:8080"}, Owned: []string{"3000"}},
+			cur:   Current{Ports: []string{"49152:3000", "49167:9418", "7777:7000"}},
+			want:  Desired{Ports: []string{"3000", "8080:8080"}, Owned: []string{"3000"}},
 		},
 		{
 			// Bundled rules (no ID) are still hosts sbx allows for the sandbox.
@@ -289,9 +310,9 @@ func TestAdopt(t *testing.T) {
 			if again := Adopt(got, tt.cur); !reflect.DeepEqual(again, got) {
 				t.Errorf("not idempotent: %+v then %+v", got, again)
 			}
-			// What Adopt returns must leave nothing to sync back up.
-			if plan := Diff(got, tt.cur.Rules, tt.cur.Ports); len(plan.AddHosts) != 0 || len(plan.Publish) != 0 {
-				t.Errorf("adopted state still needs publishing to sbx: %+v", plan)
+			// The adopted allowlist must leave nothing to sync back up.
+			if plan := Diff(got, tt.cur.Rules, nil); len(plan.AddHosts) != 0 {
+				t.Errorf("adopted allowlist still needs pushing to sbx: %+v", plan)
 			}
 		})
 	}

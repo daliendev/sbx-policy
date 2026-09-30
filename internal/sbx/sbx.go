@@ -229,6 +229,12 @@ func (c *Client) AddNetworkRules(hosts []string, sandbox string) error {
 // the rule outright (via "sbx policy rm network --id"), unlike adding a
 // deny rule on top, which would leave the original allow rule in place.
 // Sandbox is required because the removal is scoped to it.
+//
+// It passes --force: sbx-policy already showed the removal and got the
+// user's approval, and newer sbx versions otherwise ask again on a terminal
+// sbx-policy doesn't give them ("stdin is not a terminal; use --force to
+// skip confirmation"). sbx versions that predate --force never asked, so on
+// "unknown flag" the command is retried without it.
 func (c *Client) RemoveNetworkRuleByID(ruleID string, sandbox string) error {
 	if sandbox == "" {
 		return fmt.Errorf("sandbox name is required to remove a network rule")
@@ -237,7 +243,10 @@ func (c *Client) RemoveNetworkRuleByID(ruleID string, sandbox string) error {
 		return err
 	}
 	args := []string{"policy", "rm", "network", "--id", ruleID, "--sandbox", sandbox}
-	out, err := c.Runner.Run("sbx", args...)
+	out, err := c.Runner.Run("sbx", append(args, "--force")...)
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		out, err = c.Runner.Run("sbx", args...)
+	}
 	if err != nil {
 		return fmt.Errorf("sbx policy rm network --id %s --sandbox %s: %w\noutput: %s", ruleID, sandbox, err, string(out))
 	}

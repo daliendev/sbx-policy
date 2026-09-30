@@ -1,6 +1,7 @@
 package sbx
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -285,7 +286,7 @@ func TestRemoveNetworkRuleByIDScoped(t *testing.T) {
 
 	found := false
 	for _, call := range mock.calls {
-		if strings.Join(call, " ") == "sbx policy rm network --id rule-example --sandbox my-sandbox" {
+		if strings.Join(call, " ") == "sbx policy rm network --id rule-example --sandbox my-sandbox --force" {
 			found = true
 		}
 	}
@@ -448,5 +449,52 @@ func TestClientRefusesFlagLikeArguments(t *testing.T) {
 				t.Fatalf("sbx was executed: %v", mock.calls)
 			}
 		})
+	}
+}
+
+// failingRunner fails every call whose arguments contain failArg, with
+// failErr, and records all calls.
+type failingRunner struct {
+	failArg string
+	failErr error
+	calls   []string
+}
+
+func (f *failingRunner) Run(name string, arg ...string) ([]byte, error) {
+	call := strings.Join(append([]string{name}, arg...), " ")
+	f.calls = append(f.calls, call)
+	for _, a := range arg {
+		if a == f.failArg {
+			return nil, f.failErr
+		}
+	}
+	return nil, nil
+}
+
+// An sbx too old to know --force never asked for confirmation: retry
+// without it.
+func TestRemoveNetworkRuleByIDRetriesWithoutForceOnOldSbx(t *testing.T) {
+	r := &failingRunner{failArg: "--force", failErr: errors.New("exit status 1: unknown flag: --force")}
+	if err := (&Client{Runner: r}).RemoveNetworkRuleByID("id-1", "sb"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"sbx policy rm network --id id-1 --sandbox sb --force",
+		"sbx policy rm network --id id-1 --sandbox sb",
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("calls = %v, want %v", r.calls, want)
+	}
+}
+
+// Any other failure is reported as is, without a retry.
+func TestRemoveNetworkRuleByIDReportsOtherErrors(t *testing.T) {
+	r := &failingRunner{failArg: "--force", failErr: errors.New("exit status 1: rule not found")}
+	err := (&Client{Runner: r}).RemoveNetworkRuleByID("id-1", "sb")
+	if err == nil || !strings.Contains(err.Error(), "rule not found") {
+		t.Fatalf("expected the sbx error, got %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected no retry, got calls %v", r.calls)
 	}
 }

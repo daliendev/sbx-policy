@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,5 +40,16 @@ func TestConfirmSyncFirstSyncDefaults(t *testing.T) {
 				t.Fatalf("confirmSync = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSummarizePorts(t *testing.T) {
+	got := summarizePorts([]string{
+		"49185:9418", "49182:9418", "60229:60229", "49188:9418", "49183:9418",
+		"49184:9418", "49186:9418", "49187:9418", "8080:3000",
+	})
+	want := []string{"8080:3000", "9418 (7 host ports, 49182–49188)", "60229:60229"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

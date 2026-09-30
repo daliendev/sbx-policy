@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/daliendev/sbx-policy/internal/config"
@@ -339,7 +341,52 @@ func printForeignPorts(ports []string) {
 		return
 	}
 	ui.Info("Ports left alone (not published by sbx-policy; use 'sbx-policy ports add' to manage one):")
-	ui.PrintList(ports, "•")
+	ui.PrintList(summarizePorts(ports), "•")
+}
+
+// summarizePorts collapses mappings that share a sandbox port into one line,
+// sorted by sandbox port. sbx publishes a kit's port on a new random host
+// port at every sandbox start and may keep the old ones, so one sandbox port
+// can pile up many mappings: "49182:9418" ... "49188:9418" becomes
+// "9418 (7 host ports, 49182–49188)". A lone mapping is shown as is.
+func summarizePorts(ports []string) []string {
+	type group struct {
+		sandbox, minHost, maxHost int
+		mappings                  []string
+	}
+	groups := map[int]*group{}
+	var order []int
+	var other []string
+	for _, m := range ports {
+		h, sp, ok := strings.Cut(m, ":")
+		host, err1 := strconv.Atoi(h)
+		sandbox, err2 := strconv.Atoi(sp)
+		if !ok || err1 != nil || err2 != nil {
+			other = append(other, m)
+			continue
+		}
+		g := groups[sandbox]
+		if g == nil {
+			g = &group{sandbox: sandbox, minHost: host, maxHost: host}
+			groups[sandbox] = g
+			order = append(order, sandbox)
+		}
+		g.minHost = min(g.minHost, host)
+		g.maxHost = max(g.maxHost, host)
+		g.mappings = append(g.mappings, m)
+	}
+	sort.Ints(order)
+
+	out := make([]string, 0, len(order)+len(other))
+	for _, sp := range order {
+		g := groups[sp]
+		if len(g.mappings) == 1 {
+			out = append(out, g.mappings[0])
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d (%d host ports, %d–%d)", g.sandbox, len(g.mappings), g.minHost, g.maxHost))
+	}
+	return append(out, other...)
 }
 
 // confirmSync shows plan (what will actually change in sbx) and asks before
